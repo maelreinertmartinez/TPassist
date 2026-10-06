@@ -1,5 +1,7 @@
 // Types partagés entre l'API (apps/server) et le front (apps/web).
 
+export * from './steps';
+
 export type UnitKind = 'cours' | 'td' | 'tp' | 'ei' | 'corrige';
 export type PlayableKind = 'td' | 'tp' | 'ei';
 export type SessionMode = 'tp' | 'ei_aides' | 'ei_examen';

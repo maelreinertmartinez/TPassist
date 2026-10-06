@@ -88,6 +88,16 @@ npm run sample-pdf # génère samples/exemple-algebre.pdf (cours + TD + corrigé
 
 L'analyse des PDF nécessite `poppler-utils` (`pdfinfo`, `pdftoppm`, `pdftotext`), fourni dans l'image Docker.
 
+### Système de design
+
+L'interface s'inspire de Notion et suit les règles de *Refactoring UI* : tous les choix visuels sont définis d'avance
+dans `apps/web/src/index.css` (couleurs HSL en nuances, 3 niveaux de texte, échelle de tailles 12→30 px, 2 graisses,
+espacements 4/8/12/16/24/32/48/64/96 px, 2 rayons, 5 ombres d'élévation, mode sombre).
+
+```bash
+npm run lint:design   # refuse les valeurs hors système (tailles arbitraires, graisses, couleurs hexadécimales…)
+```
+
 ### Architecture
 
 ```

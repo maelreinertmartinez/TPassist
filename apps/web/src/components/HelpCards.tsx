@@ -1,63 +1,67 @@
 import type { CourseRef, EventKind, HelpEventDto } from '@tpassist/shared';
-import clsx from 'clsx';
-import { BookOpen, CheckCircle2, Lightbulb, MessageSquareText, Sparkles } from 'lucide-react';
+import { BookOpen, CheckCircle2, Lightbulb, Loader2, MessageSquareText, Sparkles } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
 import { Markdown } from './Markdown';
-import { Badge, Modal, Spinner } from './ui';
+import { Callout, Modal, type Tone } from './ui';
 
-const META: Record<Exclude<EventKind, 'error_location' | 'error_explanation'>, { title: string; icon: ReactNode; tone: string }> = {
-  reformulation: { title: 'Reformulation', icon: <MessageSquareText className="size-4" />, tone: 'border-l-accent' },
-  course_refs: { title: 'Partie de cours utile', icon: <BookOpen className="size-4" />, tone: 'border-l-[#0891b2]' },
-  hint: { title: 'Indice', icon: <Lightbulb className="size-4" />, tone: 'border-l-warn' },
-  solution: { title: 'Solution', icon: <CheckCircle2 className="size-4" />, tone: 'border-l-ok' },
+export type HelpKindShown = Exclude<EventKind, 'error_location' | 'error_explanation'>;
+
+export const HELP_META: Record<HelpKindShown, { title: string; icon: ReactNode; tone: Tone; order: number }> = {
+  reformulation: { title: 'Reformulation', icon: <MessageSquareText className="size-4" />, tone: 'grey', order: 0 },
+  course_refs: { title: 'Partie de cours utile', icon: <BookOpen className="size-4" />, tone: 'blue', order: 1 },
+  hint: { title: 'Indication', icon: <Lightbulb className="size-4" />, tone: 'yellow', order: 2 },
+  solution: { title: 'Solution expliquée', icon: <CheckCircle2 className="size-4" />, tone: 'green', order: 3 },
 };
 
-export function HelpCard({ kind, contentMd, courseRefs, solutionSource, streaming }: Partial<HelpEventDto> & { kind: keyof typeof META; streaming?: boolean }) {
-  const meta = META[kind];
+export function HelpCard({ kind, contentMd, courseRefs, solutionSource, streaming }: Partial<HelpEventDto> & { kind: HelpKindShown; streaming?: boolean }) {
+  const meta = HELP_META[kind];
   return (
-    <div className={clsx('print-break rounded-xl border border-border border-l-4 bg-surface px-4 py-3', meta.tone)} id={`help-${kind}`}>
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <p className="flex items-center gap-2 text-sm font-semibold">
-          {meta.icon} {meta.title}
-        </p>
-        {kind === 'solution' && solutionSource && (
-          <Badge tone={solutionSource === 'official' ? 'ok' : 'accent'}>
+    <Callout
+      id={`help-${kind}`}
+      tone={meta.tone}
+      icon={meta.icon}
+      title={meta.title}
+      aside={
+        kind === 'solution' && solutionSource ? (
+          <span className="inline-flex items-center gap-1 text-xs">
             {solutionSource === 'official' ? (
               <>
                 <CheckCircle2 className="size-3" /> D’après le corrigé officiel
               </>
             ) : (
               <>
-                <Sparkles className="size-3" /> Solution générée par l’IA
+                <Sparkles className="size-3" /> Rédigée par l’IA
               </>
             )}
-          </Badge>
-        )}
-      </div>
+          </span>
+        ) : undefined
+      }
+    >
       {kind === 'course_refs' && courseRefs && courseRefs.length > 0 ? (
         <CourseRefs refs={courseRefs} />
       ) : contentMd ? (
         <Markdown className="text-sm">{contentMd}</Markdown>
       ) : streaming ? (
-        <Spinner label="Rédaction en cours…" />
+        <span className="inline-flex items-center gap-2 text-sm"><Loader2 className="size-4 animate-spin" /> Rédaction en cours…</span>
       ) : null}
-    </div>
+    </Callout>
   );
 }
 
 function CourseRefs({ refs }: { refs: CourseRef[] }) {
   const [page, setPage] = useState<{ url: string; label: string } | null>(null);
   return (
-    <div className="space-y-3">
+    <div className="space-y-4">
       {refs.map((r) => (
-        <div key={r.sectionId} className="space-y-1.5">
+        <div key={r.sectionId}>
           <div className="flex flex-wrap items-baseline justify-between gap-2">
-            <p className="text-sm font-medium">
-              {r.title} <span className="text-xs font-normal text-muted">— {r.unitTitle}</span>
+            <p className="text-sm font-semibold">
+              {r.title} <span className="font-normal">· {r.unitTitle}</span>
             </p>
             {r.documentId && r.pageStart && (
               <button
-                className="text-xs font-medium text-accent hover:underline"
+                type="button"
+                className="text-sm underline-offset-2 hover:underline"
                 onClick={() => setPage({ url: `/api/documents/${r.documentId}/pages/${r.pageStart}`, label: `${r.unitTitle} — page ${r.pageStart}` })}
               >
                 Voir p. {r.pageStart}
@@ -65,14 +69,14 @@ function CourseRefs({ refs }: { refs: CourseRef[] }) {
               </button>
             )}
           </div>
-          <p className="text-sm text-muted">{r.why}</p>
-          <div className="rounded-lg bg-surface-2 px-3 py-2">
+          <p className="mt-1 text-sm">{r.why}</p>
+          <div className="mt-2 rounded bg-page px-3 py-2 text-ink">
             <Markdown className="text-sm">{r.excerptMd}</Markdown>
           </div>
         </div>
       ))}
       <Modal open={Boolean(page)} onClose={() => setPage(null)} title={page?.label ?? ''} wide>
-        {page && <img src={page.url} alt={page.label} className="w-full rounded-lg border border-border" />}
+        {page && <img src={page.url} alt={page.label} className="w-full rounded" />}
       </Modal>
     </div>
   );

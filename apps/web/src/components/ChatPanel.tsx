@@ -1,13 +1,13 @@
 import { useQuery } from '@tanstack/react-query';
 import type { ChatMessageDto, ChatThreadDto } from '@tpassist/shared';
 import clsx from 'clsx';
-import { ImagePlus, MessageCircleQuestion, Send, X } from 'lucide-react';
+import { Eye, ImagePlus, MessageCircleQuestion, Send, Sparkles, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { api, errorMessage } from '../lib/api';
 import { imageFileToDataUrl } from '../lib/format';
 import { postSse } from '../lib/sse';
 import { Markdown } from './Markdown';
-import { ErrorBox, Spinner } from './ui';
+import { Callout, ErrorBox, IconButton, Spinner } from './ui';
 
 export function ChatPanel({ open, onClose, threadUrl, subtitle, onSent }: { open: boolean; onClose: () => void; threadUrl: string; subtitle: string; onSent?: () => void }) {
   const thread = useQuery({ queryKey: ['chat', threadUrl], queryFn: () => api.get<ChatThreadDto>(threadUrl), enabled: open });
@@ -56,66 +56,71 @@ export function ChatPanel({ open, onClose, threadUrl, subtitle, onSent }: { open
     }
   };
 
-  const disabled = thread.data?.disabled;
-
   return (
     <aside
       className={clsx(
-        'no-print fixed inset-y-0 right-0 z-40 flex w-full max-w-md flex-col border-l border-border bg-surface shadow-2xl transition-transform duration-200',
+        'no-print fixed inset-y-0 right-0 z-40 flex w-full max-w-md flex-col bg-raised shadow-e4 transition-transform duration-200',
         open ? 'translate-x-0' : 'pointer-events-none translate-x-full',
       )}
       aria-hidden={!open}
       inert={!open}
     >
-      <div className="flex items-center justify-between border-b border-border px-4 py-3">
-        <div>
-          <p className="flex items-center gap-2 font-semibold">
+      <div className="flex items-start justify-between gap-2 px-4 py-3">
+        <div className="min-w-0">
+          <p className="flex items-center gap-2 text-sm font-semibold">
             <MessageCircleQuestion className="size-4 text-accent" /> Poser une question
           </p>
-          <p className="text-xs text-muted">{subtitle}</p>
+          <p className="truncate text-xs text-ink-3">{subtitle}</p>
         </div>
-        <button className="rounded-md p-1 text-muted hover:bg-surface-2" onClick={onClose} aria-label="Fermer">
+        <IconButton label="Fermer" onClick={onClose}>
           <X className="size-4" />
-        </button>
+        </IconButton>
       </div>
 
-      <div className="flex-1 space-y-4 overflow-y-auto px-4 py-4">
+      <div className="flex-1 space-y-6 overflow-y-auto px-4 py-4">
         {thread.isLoading && <Spinner label="Chargement…" />}
         {thread.error && <ErrorBox error={thread.error} />}
         {thread.data && thread.data.messages.length === 0 && !pending && (
-          <p className="rounded-lg bg-surface-2 px-3 py-2 text-sm text-muted">
-            Pose une question sur le cours ou sur le sujet ouvert. L’IA respecte les verrous : elle ne donne ni l’indice ni la solution de la question en cours avant qu’ils soient débloqués.
-          </p>
+          <Callout tone="blue" icon={<Sparkles className="size-4" />}>
+            <p className="text-sm">
+              Pose une question sur le cours ou sur le sujet ouvert. L’IA respecte les verrous : elle ne donne ni l’indication ni la solution de la question en cours avant leur déblocage.
+            </p>
+          </Callout>
         )}
-        {thread.data?.messages.map((m) => <Bubble key={m.id} role={m.role} text={m.contentMd} image={m.imageUrl} />)}
+        {thread.data?.messages.map((m) => <Message key={m.id} role={m.role} text={m.contentMd} image={m.imageUrl} />)}
         {pending && (
           <>
-            <Bubble role="user" text={pending.user} image={pending.image} />
-            {pending.reply ? <Bubble role="assistant" text={pending.reply} /> : <Spinner label="L’IA réfléchit…" />}
+            <Message role="user" text={pending.user} image={pending.image} />
+            {pending.reply ? <Message role="assistant" text={pending.reply} /> : <Spinner label="L’IA réfléchit…" />}
           </>
         )}
         {error && <ErrorBox error={error} />}
         <div ref={bottom} />
       </div>
 
-      <div className="border-t border-border p-3">
-        {disabled ? (
-          <p className="text-center text-sm text-muted">Le chat est désactivé pendant une EI en mode examen.</p>
+      <div className="p-4">
+        {thread.data?.disabled ? (
+          <p className="text-center text-sm text-ink-3">Le chat est désactivé pendant une EI en mode examen.</p>
         ) : (
-          <div className="space-y-2">
+          <div className="rounded-lg bg-block p-2 focus-within:ring-2 focus-within:ring-accent">
             {image && (
-              <div className="relative inline-block">
-                <img src={image} alt="Pièce jointe" className="h-16 rounded-md border border-border" />
-                <button className="absolute -top-2 -right-2 rounded-full bg-surface p-0.5 shadow" onClick={() => setImage(null)} aria-label="Retirer l’image">
+              <div className="relative mb-2 inline-block">
+                <img src={image} alt="Pièce jointe" className="h-16 rounded" />
+                <button
+                  type="button"
+                  aria-label="Retirer l’image"
+                  className="absolute -top-2 -right-2 grid size-6 place-items-center rounded-full bg-page text-ink-3 shadow-e1 hover:text-ink"
+                  onClick={() => setImage(null)}
+                >
                   <X className="size-3" />
                 </button>
               </div>
             )}
-            {preview && text.trim() ? (
-              <div className="max-h-40 overflow-y-auto rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm">
-                <Markdown>{text}</Markdown>
+            {preview && text.trim() && (
+              <div className="mb-2 max-h-32 overflow-y-auto rounded bg-page px-3 py-2">
+                <Markdown className="text-sm">{text}</Markdown>
               </div>
-            ) : null}
+            )}
             <textarea
               value={text}
               onChange={(e) => setText(e.target.value)}
@@ -127,14 +132,17 @@ export function ChatPanel({ open, onClose, threadUrl, subtitle, onSent }: { open
                 }
               }}
               rows={3}
-              placeholder="Ta question… (LaTeX avec $...$, Entrée pour envoyer)"
-              className="w-full resize-none rounded-lg border border-border bg-surface px-3 py-2 text-sm focus:border-accent focus:outline-none"
+              placeholder="Ta question… (LaTeX : $...$ · Entrée pour envoyer)"
+              className="w-full resize-none bg-transparent px-2 py-1 text-sm leading-6 placeholder:text-ink-4 focus:outline-none"
             />
             <div className="flex items-center justify-between">
-              <div className="flex items-center gap-1">
-                <button className="rounded-md p-1.5 text-muted hover:bg-surface-2 hover:text-ink" onClick={() => fileInput.current?.click()} title="Joindre une image">
+              <div className="flex items-center">
+                <IconButton label="Joindre une image" onClick={() => fileInput.current?.click()}>
                   <ImagePlus className="size-4" />
-                </button>
+                </IconButton>
+                <IconButton label={preview ? 'Masquer l’aperçu' : 'Aperçu LaTeX'} onClick={() => setPreview(!preview)} active={preview}>
+                  <Eye className="size-4" />
+                </IconButton>
                 <input
                   ref={fileInput}
                   type="file"
@@ -146,16 +154,15 @@ export function ChatPanel({ open, onClose, threadUrl, subtitle, onSent }: { open
                     e.target.value = '';
                   }}
                 />
-                <label className="flex items-center gap-1.5 text-xs text-muted">
-                  <input type="checkbox" checked={preview} onChange={(e) => setPreview(e.target.checked)} /> Aperçu
-                </label>
               </div>
               <button
+                type="button"
                 onClick={send}
                 disabled={!text.trim() || Boolean(pending)}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-accent-ink disabled:opacity-50"
+                aria-label="Envoyer"
+                className="grid size-8 place-items-center rounded bg-accent text-accent-ink transition-colors hover:bg-accent-hover disabled:opacity-50"
               >
-                <Send className="size-3.5" /> Envoyer
+                <Send className="size-4" />
               </button>
             </div>
           </div>
@@ -165,13 +172,23 @@ export function ChatPanel({ open, onClose, threadUrl, subtitle, onSent }: { open
   );
 }
 
-function Bubble({ role, text, image }: { role: 'user' | 'assistant'; text: string; image?: string | null }) {
-  return (
-    <div className={clsx('flex', role === 'user' ? 'justify-end' : 'justify-start')}>
-      <div className={clsx('max-w-[92%] rounded-2xl px-3.5 py-2.5 text-sm', role === 'user' ? 'bg-accent-soft' : 'border border-border bg-surface-2')}>
-        {image && <img src={image} alt="" className="mb-2 max-h-40 rounded-md" />}
-        <Markdown>{text}</Markdown>
+function Message({ role, text, image }: { role: 'user' | 'assistant'; text: string; image?: string | null }) {
+  if (role === 'user') {
+    return (
+      <div className="flex justify-end">
+        <div className="max-w-sm rounded-lg bg-block px-3 py-2 text-sm">
+          {image && <img src={image} alt="" className="mb-2 max-h-48 rounded" />}
+          <Markdown>{text}</Markdown>
+        </div>
       </div>
+    );
+  }
+  return (
+    <div className="flex gap-3">
+      <span className="grid size-6 shrink-0 place-items-center rounded-full bg-tint-blue text-tint-blue-icon">
+        <Sparkles className="size-3" />
+      </span>
+      <Markdown className="min-w-0 flex-1 text-sm">{text}</Markdown>
     </div>
   );
 }

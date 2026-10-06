@@ -1,8 +1,9 @@
 import { useMutation } from '@tanstack/react-query';
-import { FileUp, FileText, X } from 'lucide-react';
+import clsx from 'clsx';
+import { FileText, FileUp, X } from 'lucide-react';
 import { useRef, useState } from 'react';
 import { api } from '../lib/api';
-import { Button, ErrorBox, Modal } from './ui';
+import { Button, ErrorBox, IconButton, Modal } from './ui';
 
 export function UploadDialog({ courseId, open, onClose, onUploaded }: { courseId: string; open: boolean; onClose: () => void; onUploaded: () => void }) {
   const [files, setFiles] = useState<File[]>([]);
@@ -35,20 +36,19 @@ export function UploadDialog({ courseId, open, onClose, onUploaded }: { courseId
       title="Ajouter des fichiers"
       footer={
         <>
-          <Button variant="ghost" onClick={onClose}>
+          <Button variant="tertiary" onClick={onClose}>
             Annuler
           </Button>
-          <Button variant="primary" disabled={files.length === 0} loading={upload.isPending} onClick={() => upload.mutate()} icon={<FileUp className="size-4" />}>
-            Importer et analyser
+          <Button variant="primary" disabled={files.length === 0} loading={upload.isPending} onClick={() => upload.mutate()}>
+            Importer et analyser {files.length > 0 && `(${files.length})`}
           </Button>
         </>
       }
     >
       <div className="space-y-4">
-        <p className="text-sm text-muted">
-          Ajoute des PDF de cours, de TD, de TP, de corrigés ou d’EI. Un même PDF peut mélanger plusieurs types : l’IA détectera chaque partie.
-        </p>
-        <div
+        <p className="text-sm text-ink-2">Cours, TD, TP, corrigés ou EI : un même PDF peut tout mélanger, l’IA repère chaque partie.</p>
+        <button
+          type="button"
           onDragOver={(e) => {
             e.preventDefault();
             setDrag(true);
@@ -60,26 +60,30 @@ export function UploadDialog({ courseId, open, onClose, onUploaded }: { courseId
             addFiles(e.dataTransfer.files);
           }}
           onClick={() => input.current?.click()}
-          className={`flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed px-4 py-8 text-center transition-colors ${
-            drag ? 'border-accent bg-accent-soft' : 'border-border hover:border-accent'
-          }`}
+          className={clsx(
+            'flex w-full flex-col items-center justify-center gap-3 rounded-lg px-4 py-12 text-center transition-colors',
+            drag ? 'bg-tint-blue text-tint-blue-ink' : 'bg-block text-ink-2 hover:bg-hover',
+          )}
         >
-          <FileUp className="size-7 text-muted" />
-          <span className="text-sm font-medium">Glisse tes PDF ici ou clique pour choisir</span>
-          <input ref={input} type="file" accept="application/pdf,.pdf" multiple hidden onChange={(e) => addFiles(e.target.files)} />
-        </div>
+          <span className="grid size-12 place-items-center rounded-full bg-page text-accent shadow-e1">
+            <FileUp className="size-6" />
+          </span>
+          <span className="text-sm font-semibold">Glisse tes PDF ici</span>
+          <span className="text-xs text-ink-3">ou clique pour les choisir</span>
+        </button>
+        <input ref={input} type="file" accept="application/pdf,.pdf" multiple hidden onChange={(e) => addFiles(e.target.files)} />
         {files.length > 0 && (
-          <ul className="space-y-1.5">
+          <ul className="space-y-1">
             {files.map((f) => (
-              <li key={f.name + f.size} className="flex items-center justify-between gap-2 rounded-lg bg-surface-2 px-3 py-2 text-sm">
+              <li key={f.name + f.size} className="flex items-center justify-between gap-2 rounded px-2 py-1 text-sm hover:bg-hover">
                 <span className="flex min-w-0 items-center gap-2">
-                  <FileText className="size-4 shrink-0 text-muted" />
+                  <FileText className="size-4 shrink-0 text-ink-4" />
                   <span className="truncate">{f.name}</span>
-                  <span className="shrink-0 text-xs text-muted">{(f.size / 1024 / 1024).toFixed(1)} Mo</span>
+                  <span className="shrink-0 text-xs text-ink-3">{(f.size / 1024 / 1024).toFixed(1)} Mo</span>
                 </span>
-                <button className="text-muted hover:text-bad" onClick={() => setFiles((cur) => cur.filter((c) => c !== f))} aria-label="Retirer">
+                <IconButton label="Retirer" onClick={() => setFiles((cur) => cur.filter((c) => c !== f))}>
                   <X className="size-4" />
-                </button>
+                </IconButton>
               </li>
             ))}
           </ul>

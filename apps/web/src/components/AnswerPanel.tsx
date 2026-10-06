@@ -5,11 +5,11 @@ import { python } from '@codemirror/lang-python';
 import { sql } from '@codemirror/lang-sql';
 import CodeMirror from '@uiw/react-codemirror';
 import { CODE_LANGUAGES, type AnswerType, type CodeLanguage, type SubmitAttemptBody } from '@tpassist/shared';
-import { Camera, Code2, ImagePlus, Type, X } from 'lucide-react';
+import { Camera, Code2, Eye, ImagePlus, Type, X } from 'lucide-react';
 import { useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { imageFileToDataUrl } from '../lib/format';
 import { Markdown } from './Markdown';
-import { Button, Tabs } from './ui';
+import { Button, IconButton, inputClass, Segmented } from './ui';
 
 const LANG_EXT: Record<CodeLanguage, () => ReturnType<typeof python> | null> = {
   python: () => python(),
@@ -50,25 +50,20 @@ export function draftToBody(questionId: string, d: AnswerDraft): SubmitAttemptBo
   return { questionId, type: 'text', text: d.text };
 }
 
-export function AnswerPanel({
-  draft,
-  onChange,
-  onSubmit,
-  submitting,
-  submitLabel,
-  disabled,
-}: {
-  draft: AnswerDraft;
-  onChange: (d: AnswerDraft) => void;
-  onSubmit: () => void;
-  submitting: boolean;
-  submitLabel: string;
-  disabled?: boolean;
-}) {
+export function canSubmitDraft(d: AnswerDraft) {
+  return d.type === 'text' ? d.text.trim().length > 0 : d.type === 'code' ? d.code.trim().length > 0 : Boolean(d.image);
+}
+
+/**
+ * Éditeur de réponse qui remplit toute la hauteur disponible (le parent est une colonne flex).
+ * Le bouton de validation est rendu par le parent, épinglé en bas du panneau.
+ */
+export function AnswerPanel({ draft, onChange, onSubmit, disabled }: { draft: AnswerDraft; onChange: (d: AnswerDraft) => void; onSubmit: () => void; disabled?: boolean }) {
   const dark = usePrefersDark();
   const fileInput = useRef<HTMLInputElement>(null);
   const cameraInput = useRef<HTMLInputElement>(null);
   const [imgError, setImgError] = useState<string | null>(null);
+  const [preview, setPreview] = useState(true);
   const ext = useMemo(() => {
     const e = LANG_EXT[draft.codeLang]();
     return e ? [e] : [];
@@ -84,48 +79,31 @@ export function AnswerPanel({
     }
   };
 
-  const canSubmit = draft.type === 'text' ? draft.text.trim().length > 0 : draft.type === 'code' ? draft.code.trim().length > 0 : Boolean(draft.image);
+  const showPreview = preview && draft.type === 'text' && draft.text.trim().length > 0;
 
   return (
-    <div className="space-y-3">
-      <Tabs
-        value={draft.type}
-        onChange={(type) => onChange({ ...draft, type })}
-        items={[
-          { value: 'text', label: (<><Type className="size-3.5" /> Texte / LaTeX</>) },
-          { value: 'code', label: (<><Code2 className="size-3.5" /> Code</>) },
-          { value: 'image', label: (<><Camera className="size-3.5" /> Photo</>) },
-        ]}
-      />
-
-      {draft.type === 'text' && (
-        <div className="space-y-2">
-          <textarea
-            value={draft.text}
-            disabled={disabled}
-            onChange={(e) => onChange({ ...draft, text: e.target.value })}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && canSubmit) onSubmit();
-            }}
-            rows={9}
-            placeholder={'Rédige ta réponse. Formules en LaTeX : $AB = \\begin{pmatrix} 1 & 2 \\\\ 3 & 4 \\end{pmatrix}$\n(Ctrl+Entrée pour valider)'}
-            className="w-full resize-y rounded-xl border border-border bg-surface px-3.5 py-3 font-mono text-sm leading-relaxed focus:border-accent focus:ring-2 focus:ring-accent/20 focus:outline-none"
-          />
-          {draft.text.trim() && (
-            <div className="rounded-xl border border-dashed border-border bg-surface-2/60 px-3.5 py-2.5">
-              <p className="mb-1 text-xs font-medium text-muted">Aperçu</p>
-              <Markdown className="text-sm">{draft.text}</Markdown>
-            </div>
-          )}
-        </div>
-      )}
-
-      {draft.type === 'code' && (
-        <div className="space-y-2">
+    <div className="flex min-h-0 flex-1 flex-col gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <Segmented
+          value={draft.type}
+          onChange={(type) => onChange({ ...draft, type })}
+          items={[
+            { value: 'text', label: (<><Type className="size-4" /> Texte</>) },
+            { value: 'code', label: (<><Code2 className="size-4" /> Code</>) },
+            { value: 'image', label: (<><Camera className="size-4" /> Photo</>) },
+          ]}
+        />
+        {draft.type === 'text' && (
+          <IconButton label={preview ? 'Masquer l’aperçu' : 'Afficher l’aperçu'} onClick={() => setPreview(!preview)} active={preview}>
+            <Eye className="size-4" />
+          </IconButton>
+        )}
+        {draft.type === 'code' && (
           <select
             value={draft.codeLang}
             onChange={(e) => onChange({ ...draft, codeLang: e.target.value as CodeLanguage })}
-            className="rounded-lg border border-border bg-surface px-2 py-1.5 text-sm"
+            className="h-8 rounded bg-block px-2 text-sm text-ink focus:outline-accent"
+            aria-label="Langage"
           >
             {CODE_LANGUAGES.map((l) => (
               <option key={l} value={l}>
@@ -133,10 +111,36 @@ export function AnswerPanel({
               </option>
             ))}
           </select>
-          <div className="overflow-hidden rounded-xl border border-border">
+        )}
+      </div>
+
+      {draft.type === 'text' && (
+        <>
+          <textarea
+            value={draft.text}
+            disabled={disabled}
+            onChange={(e) => onChange({ ...draft, text: e.target.value })}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && canSubmitDraft(draft)) onSubmit();
+            }}
+            placeholder={'Rédige ta réponse ici.\nFormules en LaTeX : $AB = \\begin{pmatrix} 1 & 2 \\\\ 3 & 4 \\end{pmatrix}$\nCtrl + Entrée pour valider.'}
+            className="min-h-48 flex-1 resize-none rounded-lg bg-block px-4 py-3 font-mono text-sm leading-6 text-ink placeholder:text-ink-4 focus:bg-page focus:ring-2 focus:ring-accent focus:outline-none"
+          />
+          {showPreview && (
+            <div className="max-h-48 shrink-0 overflow-y-auto rounded-lg px-4 py-3 ring-1 ring-line">
+              <p className="mb-1 text-xs font-semibold tracking-wide text-ink-3 uppercase">Aperçu</p>
+              <Markdown className="text-sm">{draft.text}</Markdown>
+            </div>
+          )}
+        </>
+      )}
+
+      {draft.type === 'code' && (
+        <div className="relative min-h-48 flex-1 overflow-hidden rounded-lg ring-1 ring-line">
+          <div className="absolute inset-0">
             <CodeMirror
               value={draft.code}
-              height="280px"
+              height="100%"
               theme={dark ? 'dark' : 'light'}
               extensions={ext}
               editable={!disabled}
@@ -148,23 +152,29 @@ export function AnswerPanel({
       )}
 
       {draft.type === 'image' && (
-        <div className="space-y-2" onPaste={(e) => loadImage([...e.clipboardData.files].find((f) => f.type.startsWith('image/')))} tabIndex={0}>
+        <div
+          className="flex min-h-48 flex-1 flex-col gap-3"
+          onPaste={(e) => loadImage([...e.clipboardData.files].find((f) => f.type.startsWith('image/')))}
+          tabIndex={0}
+        >
           {draft.image ? (
-            <div className="relative">
-              <img src={draft.image} alt="Ta copie" className="max-h-96 w-full rounded-xl border border-border object-contain" />
-              <button className="absolute top-2 right-2 rounded-full bg-surface p-1 shadow" onClick={() => onChange({ ...draft, image: null })} aria-label="Retirer la photo">
+            <div className="relative min-h-0 flex-1 rounded-lg bg-block">
+              <img src={draft.image} alt="Ta copie" className="absolute inset-0 size-full object-contain p-2" />
+              <IconButton label="Retirer la photo" className="absolute top-2 right-2 bg-page shadow-e1" onClick={() => onChange({ ...draft, image: null })}>
                 <X className="size-4" />
-              </button>
+              </IconButton>
             </div>
           ) : (
-            <div className="flex flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed border-border px-4 py-10 text-center">
-              <ImagePlus className="size-7 text-muted" />
-              <p className="text-sm text-muted">Prends en photo ta copie manuscrite, ou colle une image (Ctrl+V).</p>
-              <div className="flex gap-2">
-                <Button size="sm" onClick={() => fileInput.current?.click()} icon={<ImagePlus className="size-3.5" />}>
+            <div className="flex flex-1 flex-col items-center justify-center gap-3 rounded-lg bg-block px-4 py-8 text-center">
+              <span className="grid size-12 place-items-center rounded-full bg-tint-blue text-tint-blue-icon">
+                <ImagePlus className="size-6" />
+              </span>
+              <p className="max-w-xs text-sm text-ink-3">Prends ta copie en photo, ou colle une image avec Ctrl + V.</p>
+              <div className="flex flex-wrap justify-center gap-2">
+                <Button variant="raised" onClick={() => fileInput.current?.click()} icon={<ImagePlus className="size-4" />}>
                   Choisir une image
                 </Button>
-                <Button size="sm" onClick={() => cameraInput.current?.click()} icon={<Camera className="size-3.5" />}>
+                <Button variant="raised" onClick={() => cameraInput.current?.click()} icon={<Camera className="size-4" />}>
                   Appareil photo
                 </Button>
               </div>
@@ -175,16 +185,12 @@ export function AnswerPanel({
           <input
             value={draft.text}
             onChange={(e) => onChange({ ...draft, text: e.target.value })}
-            placeholder="Commentaire optionnel (ex. « le résultat est en bas de page »)"
-            className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm focus:border-accent focus:outline-none"
+            placeholder="Commentaire (optionnel) : « le résultat est en bas de page »"
+            className={inputClass}
           />
-          {imgError && <p className="text-sm text-bad">{imgError}</p>}
+          {imgError && <p className="text-sm text-red-600">{imgError}</p>}
         </div>
       )}
-
-      <Button variant="primary" className="w-full" disabled={!canSubmit || disabled} loading={submitting} onClick={onSubmit}>
-        {submitLabel}
-      </Button>
     </div>
   );
 }

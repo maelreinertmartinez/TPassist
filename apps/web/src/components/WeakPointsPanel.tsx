@@ -1,93 +1,100 @@
 import { useMutation } from '@tanstack/react-query';
 import type { WeakPointDto, WeakPointStatus } from '@tpassist/shared';
-import clsx from 'clsx';
-import { ChevronDown, Flame, RotateCcw, Trash2, CheckCheck } from 'lucide-react';
+import { CheckCheck, CheckCircle2, Flame, RotateCcw, Trash2 } from 'lucide-react';
 import { useState } from 'react';
 import { api } from '../lib/api';
 import { Markdown } from './Markdown';
-import { Badge, Card, EmptyState, Tabs } from './ui';
+import { Button, EmptyState, Segmented, Tag, Toggle, useConfirm } from './ui';
 
-const STATUS_LABEL: Record<WeakPointStatus, string> = { active: 'Actif', mastered: 'Maîtrisé', resolved: 'Résolu' };
+const STATUS: Record<WeakPointStatus, { label: string; tone: 'yellow' | 'green' | 'grey' }> = {
+  active: { label: 'À travailler', tone: 'yellow' },
+  mastered: { label: 'Maîtrisé', tone: 'green' },
+  resolved: { label: 'Résolu', tone: 'grey' },
+};
+
+function priorityLabel(p: number) {
+  return p >= 70 ? 'priorité haute' : p >= 40 ? 'priorité moyenne' : 'priorité basse';
+}
 
 export function WeakPointsPanel({ points, onChange }: { points: WeakPointDto[]; onChange: () => void }) {
+  const confirm = useConfirm();
   const [filter, setFilter] = useState<'active' | 'all'>('active');
-  const [openId, setOpenId] = useState<string | null>(null);
   const setStatus = useMutation({
     mutationFn: ({ id, status }: { id: string; status: WeakPointStatus }) => api.patch(`/api/weak-points/${id}`, { status }),
     onSuccess: onChange,
   });
   const remove = useMutation({ mutationFn: (id: string) => api.del(`/api/weak-points/${id}`), onSuccess: onChange });
-  const list = filter === 'active' ? points.filter((p) => p.status === 'active') : points;
+  const active = points.filter((p) => p.status === 'active');
+  const list = filter === 'active' ? active : points;
+
+  if (points.length === 0) {
+    return (
+      <EmptyState icon={<Flame className="size-6" />} title="Aucun point bloquant">
+        Ils sont détectés dans les bilans de TD, TP et EI, puis travaillés en priorité dans les quiz et les EI blanches générées.
+      </EmptyState>
+    );
+  }
 
   return (
-    <div className="space-y-3">
-      <Tabs
+    <div className="space-y-4">
+      <Segmented
         value={filter}
         onChange={setFilter}
         items={[
-          { value: 'active', label: `Actifs (${points.filter((p) => p.status === 'active').length})` },
+          { value: 'active', label: `À travailler (${active.length})` },
           { value: 'all', label: `Tous (${points.length})` },
         ]}
       />
       {list.length === 0 ? (
-        <EmptyState icon={<Flame className="size-6" />} title="Aucun point bloquant">
-          Ils sont détectés automatiquement dans les bilans de TD, TP et EI, puis priorisés dans les quiz et les EI blanches générées.
-        </EmptyState>
+        <p className="flex items-center gap-2 text-sm text-ink-3">
+          <CheckCircle2 className="size-4 text-green-600" /> Rien à travailler pour l’instant.
+        </p>
       ) : (
-        <Card className="divide-y divide-border">
+        <div className="space-y-1">
           {list.map((p) => (
-            <div key={p.id} className="px-4 py-3">
-              <button className="flex w-full items-start justify-between gap-3 text-left" onClick={() => setOpenId(openId === p.id ? null : p.id)}>
-                <div className="min-w-0 space-y-1.5">
-                  <p className="text-sm font-medium">{p.notion}</p>
-                  <div className="flex items-center gap-2">
-                    <div className="h-1.5 w-24 overflow-hidden rounded-full bg-surface-2" title={`Priorité ${p.priority}/100`}>
-                      <div
-                        className={clsx('h-full rounded-full', p.priority >= 70 ? 'bg-bad' : p.priority >= 40 ? 'bg-warn' : 'bg-ok')}
-                        style={{ width: `${p.priority}%` }}
-                      />
-                    </div>
-                    <Badge tone={p.status === 'active' ? 'warn' : p.status === 'mastered' ? 'ok' : 'neutral'}>{STATUS_LABEL[p.status]}</Badge>
-                    {p.successStreak > 0 && p.status === 'active' && <span className="text-xs text-muted">{p.successStreak} réussite(s) d’affilée</span>}
-                  </div>
-                </div>
-                <ChevronDown className={clsx('mt-0.5 size-4 shrink-0 text-muted transition-transform', openId === p.id && 'rotate-180')} />
-              </button>
-              {openId === p.id && (
-                <div className="mt-3 space-y-3 text-sm">
-                  {p.descriptionMd && <Markdown className="text-muted">{p.descriptionMd}</Markdown>}
-                  {p.sections.length > 0 && (
-                    <p className="text-xs text-muted">
-                      <span className="font-medium text-ink">Cours lié :</span> {p.sections.map((s) => s.title).join(' · ')}
-                    </p>
+            <Toggle
+              key={p.id}
+              summary={
+                <span className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="font-semibold text-ink">{p.notion}</span>
+                  <span className="flex items-center gap-2">
+                    {p.status === 'active' && <span className="text-xs text-ink-3">{priorityLabel(p.priority)}</span>}
+                    <Tag tone={STATUS[p.status].tone}>{STATUS[p.status].label}</Tag>
+                  </span>
+                </span>
+              }
+            >
+              <div className="space-y-3 pb-4 text-sm">
+                {p.descriptionMd && <Markdown className="text-ink-2">{p.descriptionMd}</Markdown>}
+                {p.status === 'active' && p.successStreak > 0 && <p className="text-ink-3">{p.successStreak} réussite(s) d’affilée — encore une pour le maîtriser.</p>}
+                {p.sections.length > 0 && <p className="text-ink-3">Cours lié : {p.sections.map((s) => s.title).join(' · ')}</p>}
+                {p.sourceQuestions.length > 0 && <p className="text-ink-3">Repéré dans : {p.sourceQuestions.map((q) => `${q.unitTitle}, Q${q.label}`).join(' · ')}</p>}
+                <div className="flex flex-wrap gap-1">
+                  {p.status === 'active' ? (
+                    <Button size="sm" variant="tertiary" icon={<CheckCheck className="size-4" />} onClick={() => setStatus.mutate({ id: p.id, status: 'resolved' })}>
+                      Marquer résolu
+                    </Button>
+                  ) : (
+                    <Button size="sm" variant="tertiary" icon={<RotateCcw className="size-4" />} onClick={() => setStatus.mutate({ id: p.id, status: 'active' })}>
+                      Réactiver
+                    </Button>
                   )}
-                  {p.sourceQuestions.length > 0 && (
-                    <p className="text-xs text-muted">
-                      <span className="font-medium text-ink">Apparu dans :</span> {p.sourceQuestions.map((q) => `${q.unitTitle} — Q${q.label}`).join(' · ')}
-                    </p>
-                  )}
-                  <div className="flex flex-wrap gap-2">
-                    {p.status === 'active' ? (
-                      <button className="inline-flex items-center gap-1 text-xs font-medium text-ok hover:underline" onClick={() => setStatus.mutate({ id: p.id, status: 'resolved' })}>
-                        <CheckCheck className="size-3.5" /> Marquer résolu
-                      </button>
-                    ) : (
-                      <button className="inline-flex items-center gap-1 text-xs font-medium text-accent hover:underline" onClick={() => setStatus.mutate({ id: p.id, status: 'active' })}>
-                        <RotateCcw className="size-3.5" /> Réactiver
-                      </button>
-                    )}
-                    <button
-                      className="inline-flex items-center gap-1 text-xs font-medium text-bad hover:underline"
-                      onClick={() => confirm('Supprimer ce point bloquant ?') && remove.mutate(p.id)}
-                    >
-                      <Trash2 className="size-3.5" /> Supprimer
-                    </button>
-                  </div>
+                  <Button
+                    size="sm"
+                    variant="danger-quiet"
+                    icon={<Trash2 className="size-4" />}
+                    onClick={async () => {
+                      if (await confirm({ title: 'Supprimer ce point bloquant ?', message: `« ${p.notion} » ne sera plus priorisé dans les quiz et les EI.`, confirmLabel: 'Supprimer', danger: true }))
+                        remove.mutate(p.id);
+                    }}
+                  >
+                    Supprimer
+                  </Button>
                 </div>
-              )}
-            </div>
+              </div>
+            </Toggle>
           ))}
-        </Card>
+        </div>
       )}
     </div>
   );

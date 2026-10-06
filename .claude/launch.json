@@ -1,0 +1,13 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "web-dev-test",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["vite", "--port", "5174", "--strictPort"],
+      "cwd": "apps/web",
+      "env": { "TPASSIST_API": "http://localhost:3001" },
+      "port": 5174
+    }
+  ]
+}

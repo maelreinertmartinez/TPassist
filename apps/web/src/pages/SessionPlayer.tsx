@@ -5,39 +5,38 @@ import {
   type HeartbeatResponse,
   type HelpEventDto,
   type HelpKind,
-  type LockInfo,
   type LocksDto,
+  type OutlineItem,
   type SessionState,
   type SubmitAttemptResponse,
 } from '@tpassist/shared';
 import clsx from 'clsx';
 import {
-  ArrowLeft,
   ArrowRight,
-  BookOpen,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
-  Eye,
+  CircleDashed,
   Flag,
   Image as ImageIcon,
-  Lightbulb,
-  Lock,
   MessageCircleQuestion,
   MessageSquareText,
-  SearchCheck,
+  PartyPopper,
+  SkipForward,
   Timer,
   XCircle,
 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { AnswerPanel, draftToBody, emptyDraft, type AnswerDraft } from '../components/AnswerPanel';
+import { AnswerPanel, canSubmitDraft, draftToBody, emptyDraft, type AnswerDraft } from '../components/AnswerPanel';
 import { ChatPanel } from '../components/ChatPanel';
-import { HelpCard } from '../components/HelpCards';
+import { HELP_META, HelpCard, type HelpKindShown } from '../components/HelpCards';
 import { Markdown } from '../components/Markdown';
-import { Badge, Button, Card, ErrorBox, Modal, Spinner } from '../components/ui';
+import { ErrorStepButton, HelpStepButton } from '../components/StepButtons';
+import { Button, Callout, ErrorBox, Modal, Spinner, Tag, TextAction, Toggle, useConfirm } from '../components/ui';
 import { api, ApiError, errorMessage } from '../lib/api';
-import { formatClock, formatDuration } from '../lib/format';
+import { useBreadcrumbs } from '../lib/breadcrumbs';
+import { formatClock } from '../lib/format';
 import { postSse } from '../lib/sse';
 import { useLockClock } from '../lib/useLockClock';
 
@@ -46,6 +45,7 @@ const HEARTBEAT_MS = 5000;
 export function SessionPlayer() {
   const { sessionId } = useParams<{ sessionId: string }>();
   const navigate = useNavigate();
+  const confirm = useConfirm();
   const qc = useQueryClient();
   const key = ['session', sessionId];
   const state = useQuery({
@@ -60,6 +60,8 @@ export function SessionPlayer() {
   const questionId = current?.question.id ?? null;
   const isExam = s?.session.mode === 'ei_examen';
 
+  useBreadcrumbs(s ? [{ label: s.session.courseName, to: `/courses/${s.session.courseId}` }, { label: s.session.unitTitle }] : []);
+
   const [locks, setLocks] = useState<LocksDto | null>(null);
   const [elapsedSec, setElapsedSec] = useState(0);
   const [drafts, setDrafts] = useState<Record<string, AnswerDraft>>({});
@@ -67,7 +69,6 @@ export function SessionPlayer() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [struggleOpen, setStruggleOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
-  const [finishOpen, setFinishOpen] = useState(false);
 
   useEffect(() => {
     if (current) setLocks(current.locks);
@@ -109,7 +110,6 @@ export function SessionPlayer() {
     };
   }, [beat]);
 
-  // Chronomètre local des EI (entre deux signaux).
   useEffect(() => {
     if (!s?.session.timeLimitSec || s.session.status !== 'in_progress') return;
     const id = setInterval(() => setElapsedSec((e) => e + 1), 1000);
@@ -180,221 +180,263 @@ export function SessionPlayer() {
   });
   const finish = useMutation({
     mutationFn: () => api.post<SessionState>(`/api/sessions/${sessionId}/finish`),
-    onSuccess: (st) => {
-      setFinishOpen(false);
-      setState(st);
-    },
+    onSuccess: (st) => setState(st),
   });
 
-  const onNext = () => {
+  const onSkip = () => {
     if (!current) return;
     if (current.attempts.length === 0) setStruggleOpen(true);
     else close.mutate(undefined);
   };
 
+  const onFinishExam = async () => {
+    const missing = s?.outline.filter((o) => !o.answered).length ?? 0;
+    const ok = await confirm({
+      title: 'Terminer l’épreuve ?',
+      message: (
+        <>
+          {missing > 0 ? `${missing} question(s) n’ont pas de réponse. ` : 'Toutes les questions ont une réponse. '}
+          Une fois terminée, l’épreuve est corrigée et notée sur 20 : tu ne pourras plus modifier tes réponses.
+        </>
+      ),
+      confirmLabel: 'Terminer et obtenir ma note',
+      danger: true,
+    });
+    if (ok) finish.mutate();
+  };
+
+  // Transition : la solution expliquée est toujours affichée avant de continuer.
+  const solutionEvent = current?.events.find((e) => e.kind === 'solution');
+  const autoSolutionFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (current?.closed && !solutionEvent && autoSolutionFor.current !== current.question.id && !streaming) {
+      autoSolutionFor.current = current.question.id;
+      runHelp('solution');
+    }
+  }, [current?.closed, current?.question.id, solutionEvent]);
+
   // ---------- Rendu ----------
-  if (state.isLoading) return <div className="p-8"><Spinner label="Chargement de la session…" /></div>;
-  if (state.error || !s) return <div className="p-8"><ErrorBox error={state.error ?? 'Session introuvable'} /></div>;
+  if (state.isLoading) return <PageMessage><Spinner label="Chargement de la séance…" /></PageMessage>;
+  if (state.error || !s) return <PageMessage><ErrorBox error={state.error ?? 'Séance introuvable'} /></PageMessage>;
 
   if (s.session.status !== 'in_progress') {
     return (
-      <div className="mx-auto max-w-xl px-4 py-16 text-center">
-        <Spinner className="justify-center" label="" />
-        <h1 className="mt-4 text-xl font-semibold">Séance terminée !</h1>
-        <p className="mt-2 text-sm text-muted">L’IA prépare ton bilan détaillé (réponses, erreurs, solutions et points bloquants). Cela peut prendre une ou deux minutes.</p>
-        <Link to={`/courses/${s.session.courseId}`} className="mt-6 inline-block text-sm text-accent hover:underline">
-          Retour au cours
-        </Link>
-      </div>
+      <PageMessage>
+        <div className="flex flex-col items-center gap-3 text-center">
+          <span className="grid size-12 place-items-center rounded-full bg-tint-green text-tint-green-icon">
+            <PartyPopper className="size-6" />
+          </span>
+          <h1 className="text-xl font-semibold tracking-tight">Séance terminée</h1>
+          <p className="max-w-md text-sm text-ink-3">L’IA prépare ton bilan : chaque question, tes réponses, tes erreurs expliquées et tes points bloquants. Cela prend une ou deux minutes.</p>
+          <Spinner label="Préparation du bilan…" />
+          <Link to={`/courses/${s.session.courseId}`} className="text-sm text-ink-3 hover:text-ink hover:underline">
+            Retour au cours
+          </Link>
+        </div>
+      </PageMessage>
     );
   }
 
   const index = s.outline.findIndex((o) => o.id === s.currentQuestionId);
   const timeLeft = s.session.timeLimitSec ? s.session.timeLimitSec - elapsedSec : null;
-  const lastAttempt = current?.attempts[current.attempts.length - 1];
-  const hasCorrect = current?.attempts.some((a) => a.verdict === 'correct');
+  const attempts = current?.attempts ?? [];
+  const lastAttempt = attempts[attempts.length - 1];
+  const hasCorrect = attempts.some((a) => a.verdict === 'correct');
   const events = current?.events ?? [];
-  const solutionEvent = events.find((e) => e.kind === 'solution');
+  const shownKinds = (Object.keys(HELP_META) as HelpKindShown[]).sort((a, b) => HELP_META[a].order - HELP_META[b].order);
+  const isLast = s.outline.every((o) => o.id === current?.question.id || (o.status !== 'unseen' && o.status !== 'seen'));
 
   return (
-    <div className="mx-auto max-w-[1500px] px-4 py-5 sm:px-6">
-      {/* En-tête */}
-      <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
-        <div className="min-w-0">
-          <Link to={`/courses/${s.session.courseId}`} className="inline-flex items-center gap-1 text-sm text-muted hover:text-ink">
-            <ArrowLeft className="size-4" /> {s.session.courseName}
-          </Link>
-          <h1 className="mt-1 flex flex-wrap items-center gap-2 text-xl font-semibold">
-            {s.session.unitTitle}
-            {s.session.mode !== 'tp' && <Badge tone={isExam ? 'bad' : 'accent'}>{SESSION_MODE_LABELS[s.session.mode]}</Badge>}
-          </h1>
-        </div>
-        <div className="flex items-center gap-2">
+    <div className="mx-auto max-w-7xl px-4 pb-16 sm:px-6 lg:pb-4">
+      <h1 className="sr-only">{s.session.unitTitle}</h1>
+
+      {/* Progression et actions de la séance */}
+      <div className="no-print z-20 flex flex-wrap items-center justify-between gap-4 bg-page py-4 lg:sticky lg:top-12 lg:h-16 lg:py-0">
+        <Progress outline={s.outline} currentId={s.currentQuestionId} index={index} canJump={isExam} onJump={(id) => goto.mutate(id)} />
+        <div className="flex flex-wrap items-center gap-2">
+          {s.session.mode !== 'tp' && <Tag tone={isExam ? 'red' : 'blue'}>{SESSION_MODE_LABELS[s.session.mode]}</Tag>}
           {timeLeft !== null && (
-            <span className={clsx('inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 font-mono text-sm', timeLeft < 300 ? 'border-bad/40 bg-bad-soft text-bad' : 'border-border bg-surface')}>
+            <span
+              className={clsx(
+                'inline-flex h-8 items-center gap-2 rounded px-3 text-sm tabular-nums',
+                timeLeft < 300 ? 'bg-tint-red text-tint-red-ink' : 'bg-block text-ink-2',
+              )}
+              title="Temps restant"
+            >
               <Timer className="size-4" /> {formatClock(Math.max(0, timeLeft))}
             </span>
           )}
           {!isExam && (
-            <Button icon={<MessageCircleQuestion className="size-4" />} onClick={() => setChatOpen(true)}>
+            <Button variant="tertiary" icon={<MessageCircleQuestion className="size-4" />} onClick={() => setChatOpen(true)}>
               Poser une question
             </Button>
           )}
           {isExam && (
-            <Button variant="danger" icon={<Flag className="size-4" />} onClick={() => setFinishOpen(true)}>
+            <Button variant="danger-quiet" icon={<Flag className="size-4" />} onClick={onFinishExam}>
               Terminer l’épreuve
             </Button>
           )}
         </div>
       </div>
 
-      {/* Progression */}
-      <div className="mb-5 flex flex-wrap items-center gap-1.5">
-        <span className="mr-2 text-sm text-muted">
-          Question {index + 1}/{s.outline.length}
-        </span>
-        {s.outline.map((o, i) => (
-          <button
-            key={o.id}
-            disabled={!isExam}
-            onClick={() => goto.mutate(o.id)}
-            title={`${o.exerciseTitle} — ${o.label}`}
-            className={clsx(
-              'h-2 w-6 rounded-full transition-colors',
-              o.id === s.currentQuestionId ? 'bg-accent' : o.status === 'correct' ? 'bg-ok' : o.status === 'wrong' ? 'bg-bad' : o.status === 'skipped' ? 'bg-warn' : o.answered ? 'bg-accent/50' : 'bg-surface-2 ring-1 ring-border',
-              isExam && 'cursor-pointer hover:brightness-110',
-            )}
-            aria-label={`Question ${i + 1}`}
-          />
-        ))}
-      </div>
-
       {current && (
-        <div className="grid gap-5 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
-          {/* Colonne gauche : énoncé + aides */}
-          <div className="space-y-4">
-            <Card className="p-5">
-              <div className="mb-3 flex flex-wrap items-center gap-2">
-                <Badge tone="accent">{current.question.exerciseTitle}</Badge>
-                <Badge>Question {current.question.label}</Badge>
-                {current.question.points != null && <Badge>{current.question.points} pt</Badge>}
-              </div>
+        <div className="grid gap-8 lg:grid-cols-2 lg:gap-12">
+          {/* Colonne gauche : énoncé, puis les aides juste dessous, puis le bouton d'aide */}
+          <article className="min-w-0 max-w-[65ch] space-y-6">
+            <div className="space-y-4">
+              <p className="text-sm text-ink-3">
+                {current.question.exerciseTitle} · Question {current.question.label}
+                {current.question.points != null && ` · ${current.question.points} pt`}
+              </p>
               {current.question.contextMd.trim() && (
-                <div className="mb-4 rounded-lg bg-surface-2 px-4 py-3">
-                  <Markdown className="text-[15px]">{current.question.contextMd}</Markdown>
+                <div className="rounded-lg bg-block px-4 py-3">
+                  <Markdown>{current.question.contextMd}</Markdown>
                 </div>
               )}
-              <Markdown className="text-[15px]">{current.question.statementMd}</Markdown>
+              <Markdown className="text-base">{current.question.statementMd}</Markdown>
               {current.question.figures.length > 0 && (
-                <details className="mt-4 rounded-lg border border-border">
-                  <summary className="flex cursor-pointer items-center gap-2 px-3 py-2 text-sm font-medium">
-                    <ImageIcon className="size-4 text-muted" /> Figure{current.question.figures.length > 1 ? 's' : ''} (p. {current.question.figures.map((f) => f.page).join(', ')})
-                  </summary>
-                  <div className="space-y-2 p-2">
+                <Toggle
+                  summary={
+                    <span className="inline-flex items-center gap-2 text-ink-2">
+                      <ImageIcon className="size-4 text-ink-4" />
+                      Figure{current.question.figures.length > 1 ? 's' : ''} du sujet (p. {current.question.figures.map((f) => f.page).join(', ')})
+                    </span>
+                  }
+                >
+                  <div className="space-y-2">
                     {current.question.figures.map((f) => (
-                      <img key={f.page} src={f.url} alt={`Page ${f.page}`} className="w-full rounded-md border border-border" />
+                      <img key={f.page} src={f.url} alt={`Page ${f.page}`} className="w-full rounded-lg" />
                     ))}
                   </div>
-                </details>
+                </Toggle>
               )}
-            </Card>
+              {!isExam && !current.closed && !events.some((e) => e.kind === 'reformulation') && streaming?.kind !== 'reformulation' && (
+                <TextAction icon={<MessageSquareText className="size-4" />} onClick={() => runHelp('reformulation')} disabled={Boolean(streaming)} className="-ml-2">
+                  Reformuler l’énoncé
+                </TextAction>
+              )}
+            </div>
 
-            {current.closed ? null : !isExam ? (
-              <HelpActions
-                locks={locks}
-                remaining={remaining}
-                events={events}
-                busy={streaming?.kind ?? null}
-                onHelp={runHelp}
-                onNext={onNext}
-                nextLoading={close.isPending}
-                hasCorrect={Boolean(hasCorrect)}
-              />
-            ) : null}
-
-            <ErrorBox error={actionError} />
-
-            {!isExam && (
+            {!isExam && (events.length > 0 || streaming) && (
               <div className="space-y-3">
-                {events
-                  .filter((e) => e.kind !== 'error_location' && e.kind !== 'error_explanation' && !(current.closed && e.kind === 'solution'))
-                  .map((e) => (
-                    <HelpCard key={e.id} kind={e.kind as HelpKind} contentMd={e.contentMd} courseRefs={e.courseRefs} solutionSource={e.solutionSource} />
-                  ))}
-                {streaming && !current.closed && <HelpCard kind={streaming.kind} contentMd={streaming.text} streaming />}
+                {shownKinds.map((kind) => {
+                  const ev = events.find((e) => e.kind === kind);
+                  if (ev) return <HelpCard key={kind} kind={kind} contentMd={ev.contentMd} courseRefs={ev.courseRefs} solutionSource={ev.solutionSource} />;
+                  if (streaming?.kind === kind) return <HelpCard key={kind} kind={kind} contentMd={streaming.text} streaming />;
+                  return null;
+                })}
               </div>
             )}
-          </div>
 
-          {/* Colonne droite : réponse / vérification / transition */}
-          <div className="space-y-4">
+            {!isExam && !current.closed && (
+              <div className="flex flex-wrap items-center gap-2">
+                <HelpStepButton events={events} locks={locks} remaining={remaining} busy={streaming?.kind ?? null} onHelp={runHelp} />
+                {!hasCorrect && (
+                  <TextAction icon={<SkipForward className="size-4" />} onClick={onSkip} disabled={Boolean(streaming) || close.isPending}>
+                    Passer la question
+                  </TextAction>
+                )}
+              </div>
+            )}
+
+            <ErrorBox error={actionError} />
+          </article>
+
+          {/* Colonne droite : la réponse, collante et presque pleine hauteur */}
+          <aside className="flex min-h-96 flex-col self-start rounded-lg bg-raised shadow-e3 lg:sticky lg:top-28 lg:h-[calc(100dvh-8rem)]">
             {current.closed ? (
-              <Transition
-                attempts={current.attempts}
-                solution={solutionEvent}
-                streaming={streaming?.kind === 'solution' ? streaming.text : null}
-                onLoadSolution={() => runHelp('solution')}
-                onContinue={() => advance.mutate()}
+              <TransitionPanel
+                attempts={attempts}
+                ready={Boolean(solutionEvent)}
+                isLast={isLast}
                 continuing={advance.isPending}
-                isLast={s.outline.every((o) => o.id === current.question.id || o.status !== 'unseen' && o.status !== 'seen')}
+                onContinue={() => advance.mutate()}
               />
+            ) : isExam ? (
+              <>
+                <PanelBody title="Ta réponse">
+                  {attempts.length > 0 && (
+                    <Callout tone="green" icon={<CheckCircle2 className="size-4" />}>
+                      <p className="text-sm">Réponse enregistrée. Tu peux la remplacer tant que l’épreuve n’est pas terminée.</p>
+                    </Callout>
+                  )}
+                  <AnswerPanel draft={draft} onChange={setDraft} onSubmit={() => submit.mutate()} />
+                </PanelBody>
+                <PanelFooter>
+                  <Button variant="primary" size="lg" className="w-full" disabled={!canSubmitDraft(draft)} loading={submit.isPending} onClick={() => submit.mutate()}>
+                    {attempts.length ? 'Remplacer ma réponse' : 'Enregistrer ma réponse'}
+                  </Button>
+                  <div className="flex justify-between gap-2">
+                    <Button variant="tertiary" icon={<ChevronLeft className="size-4" />} disabled={index <= 0} onClick={() => goto.mutate(s.outline[index - 1].id)}>
+                      Précédente
+                    </Button>
+                    {index < s.outline.length - 1 ? (
+                      <Button variant="tertiary" onClick={() => advance.mutate()}>
+                        Suivante <ChevronRight className="size-4" />
+                      </Button>
+                    ) : (
+                      <Button variant="danger-quiet" icon={<Flag className="size-4" />} onClick={onFinishExam}>
+                        Terminer l’épreuve
+                      </Button>
+                    )}
+                  </div>
+                </PanelFooter>
+              </>
+            ) : hasCorrect ? (
+              <>
+                <PanelBody title="Ta solution">
+                  <Callout tone="green" icon={<CheckCircle2 className="size-4" />} title="Correct, bravo !">
+                    <p className="text-sm">Ta réponse est juste. Passe à la suite : la solution complète te sera montrée pour comparer.</p>
+                  </Callout>
+                  {lastAttempt && <AnswerReadOnly attempt={lastAttempt} />}
+                </PanelBody>
+                <PanelFooter>
+                  <Button variant="primary" size="lg" className="w-full" icon={<ArrowRight className="size-4" />} loading={close.isPending} onClick={() => close.mutate(undefined)}>
+                    Question suivante
+                  </Button>
+                </PanelFooter>
+              </>
             ) : (
               <>
-                <Card className="p-5">
-                  <h2 className="mb-3 font-semibold">{isExam ? 'Ta réponse' : 'Ta solution'}</h2>
-                  {hasCorrect && !isExam ? (
-                    <CorrectBox onNext={() => close.mutate(undefined)} loading={close.isPending} />
-                  ) : (
-                    <AnswerPanel
-                      draft={draft}
-                      onChange={setDraft}
-                      onSubmit={() => submit.mutate()}
-                      submitting={submit.isPending}
-                      submitLabel={isExam ? (current.attempts.length ? 'Remplacer ma réponse' : 'Enregistrer ma réponse') : 'Vérifier ma réponse'}
+                <PanelBody title="Ta solution" aside={attempts.length > 0 && <span className="text-xs text-ink-3">{attempts.length + 1}e essai</span>}>
+                  {lastAttempt && lastAttempt.verdict !== 'correct' && lastAttempt.verdict !== 'pending' && (
+                    <WrongCallout
+                      attempt={lastAttempt}
+                      action={
+                        <ErrorStepButton
+                          attempt={lastAttempt}
+                          locks={locks}
+                          remaining={remaining}
+                          solutionShown={Boolean(solutionEvent)}
+                          loading={reveal.isPending || streaming?.kind === 'solution'}
+                          onReveal={(what) => reveal.mutate({ attemptId: lastAttempt.id, what })}
+                          onSolution={() => runHelp('solution')}
+                        />
+                      }
+                      solutionShown={Boolean(solutionEvent)}
                     />
                   )}
-                  {submit.isPending && !isExam && <p className="mt-2 text-center text-xs text-muted">L’IA vérifie ta réponse…</p>}
-                </Card>
-
-                {isExam ? (
-                  <ExamNav
-                    answered={current.attempts.length > 0}
-                    canPrev={index > 0}
-                    canNext={index < s.outline.length - 1}
-                    onPrev={() => goto.mutate(s.outline[index - 1].id)}
-                    onNext={() => advance.mutate()}
-                    onFinish={() => setFinishOpen(true)}
-                  />
-                ) : (
-                  lastAttempt &&
-                  lastAttempt.verdict !== 'correct' &&
-                  lastAttempt.verdict !== 'pending' && (
-                    <WrongBox
-                      attempt={lastAttempt}
-                      locks={locks}
-                      remaining={remaining}
-                      solutionShown={Boolean(solutionEvent)}
-                      onReveal={(what) => reveal.mutate({ attemptId: lastAttempt.id, what })}
-                      revealing={reveal.isPending}
-                      onSolution={() => runHelp('solution')}
-                      solutionLoading={streaming?.kind === 'solution'}
-                    />
-                  )
-                )}
-                {!isExam && current.attempts.length > 1 && <AttemptHistory attempts={current.attempts.slice(0, -1)} />}
+                  <AnswerPanel draft={draft} onChange={setDraft} onSubmit={() => submit.mutate()} />
+                  {attempts.length > 1 && <AttemptHistory attempts={attempts.slice(0, -1)} />}
+                </PanelBody>
+                <PanelFooter>
+                  <Button variant="primary" size="lg" className="w-full" disabled={!canSubmitDraft(draft)} loading={submit.isPending} onClick={() => submit.mutate()}>
+                    {submit.isPending ? 'L’IA vérifie ta réponse…' : 'Vérifier ma réponse'}
+                  </Button>
+                </PanelFooter>
               </>
             )}
-          </div>
+          </aside>
         </div>
       )}
 
       <Modal
         open={struggleOpen}
         onClose={() => setStruggleOpen(false)}
-        title="Avant de passer à la suite…"
+        title="As-tu galéré sur cette question ?"
         footer={
           <>
-            <Button variant="ghost" onClick={() => setStruggleOpen(false)}>
+            <Button variant="tertiary" onClick={() => setStruggleOpen(false)}>
               Rester sur la question
             </Button>
             <Button onClick={() => close.mutate(false)} loading={close.isPending && close.variables === false}>
@@ -406,31 +448,7 @@ export function SessionPlayer() {
           </>
         }
       >
-        <p className="text-sm">Tu n’as pas proposé de réponse. As-tu eu du mal avec cette question ?</p>
-        <p className="mt-2 text-sm text-muted">Ta réponse sert à cibler le quiz de révision et les points bloquants. La solution expliquée s’affichera ensuite.</p>
-      </Modal>
-
-      <Modal
-        open={finishOpen}
-        onClose={() => setFinishOpen(false)}
-        title="Terminer l’épreuve ?"
-        footer={
-          <>
-            <Button variant="ghost" onClick={() => setFinishOpen(false)}>
-              Continuer l’épreuve
-            </Button>
-            <Button variant="danger" loading={finish.isPending} onClick={() => finish.mutate()}>
-              Terminer et obtenir ma note
-            </Button>
-          </>
-        }
-      >
-        <p className="text-sm">
-          {s.outline.filter((o) => !o.answered).length > 0
-            ? `${s.outline.filter((o) => !o.answered).length} question(s) sans réponse. `
-            : 'Toutes les questions ont une réponse. '}
-          Une fois terminée, l’épreuve est corrigée et notée sur 20.
-        </p>
+        <p className="text-sm text-ink-2">Tu passes sans avoir proposé de réponse. Ta réponse sert à cibler le quiz de révision et tes points bloquants ; la solution expliquée s’affichera ensuite.</p>
       </Modal>
 
       {!isExam && (
@@ -438,7 +456,7 @@ export function SessionPlayer() {
           open={chatOpen}
           onClose={() => setChatOpen(false)}
           threadUrl={`/api/sessions/${sessionId}/chat`}
-          subtitle={`${s.session.unitTitle}${current ? ` — question ${current.question.label}` : ''}`}
+          subtitle={`${s.session.unitTitle}${current ? ` · question ${current.question.label}` : ''}`}
           onSent={() => state.refetch()}
         />
       )}
@@ -448,100 +466,86 @@ export function SessionPlayer() {
 
 // ---------- Sous-composants ----------
 
-function LockedLabel({ ms, lock }: { ms: number | null; lock: LockInfo | null | undefined }) {
-  if (ms === 0) return null;
-  if (ms === null) return <span className="text-xs font-normal text-muted">{lock?.reason ?? 'verrouillé'}</span>;
-  return <span className="font-mono text-xs font-normal text-muted">dans {formatDuration(ms)}</span>;
+function PageMessage({ children }: { children: ReactNode }) {
+  return <div className="mx-auto max-w-xl px-4 py-24">{children}</div>;
 }
 
-function ActionButton({ icon, label, onClick, disabled, loading, extra, done }: { icon: ReactNode; label: string; onClick: () => void; disabled?: boolean; loading?: boolean; extra?: ReactNode; done?: boolean }) {
+function PanelBody({ title, aside, children }: { title: string; aside?: ReactNode; children: ReactNode }) {
   return (
-    <button
-      onClick={onClick}
-      disabled={disabled || loading}
-      className={clsx(
-        'flex w-full items-center justify-between gap-3 rounded-lg border px-3.5 py-2.5 text-left text-sm font-medium transition-colors',
-        disabled ? 'cursor-not-allowed border-border bg-surface-2/50 text-muted' : 'border-border bg-surface hover:border-accent hover:bg-accent-soft',
-      )}
-    >
-      <span className="flex items-center gap-2.5">
-        {loading ? <Spinner /> : disabled ? <Lock className="size-4" /> : icon}
-        {label}
-        {done && <CheckCircle2 className="size-3.5 text-ok" />}
+    <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4">
+      <div className="flex items-center justify-between gap-2">
+        <h2 className="text-sm font-semibold">{title}</h2>
+        {aside}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function PanelFooter({ children }: { children: ReactNode }) {
+  return <div className="space-y-2 border-t border-line p-4">{children}</div>;
+}
+
+const STATUS_META: Record<OutlineItem['status'], { label: string; bar: string }> = {
+  correct: { label: 'juste', bar: 'bg-green-500' },
+  wrong: { label: 'fausse', bar: 'bg-red-500' },
+  skipped: { label: 'passée', bar: 'bg-yellow-500' },
+  seen: { label: 'en cours', bar: 'bg-hover' },
+  unseen: { label: 'à faire', bar: 'bg-hover' },
+};
+
+function Progress({ outline, currentId, index, canJump, onJump }: { outline: OutlineItem[]; currentId: string | null; index: number; canJump: boolean; onJump: (id: string) => void }) {
+  const correct = outline.filter((o) => o.status === 'correct').length;
+  const wrong = outline.filter((o) => o.status === 'wrong').length;
+  return (
+    <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-4 gap-y-2">
+      <span className="text-sm font-semibold whitespace-nowrap">
+        Question {index + 1} <span className="font-normal text-ink-3">sur {outline.length}</span>
       </span>
-      {extra}
-    </button>
-  );
-}
-
-function HelpActions({
-  locks,
-  remaining,
-  events,
-  busy,
-  onHelp,
-  onNext,
-  nextLoading,
-  hasCorrect,
-}: {
-  locks: LocksDto | null;
-  remaining: (l: LockInfo | null | undefined) => number | null;
-  events: HelpEventDto[];
-  busy: HelpKind | null;
-  onHelp: (k: HelpKind) => void;
-  onNext: () => void;
-  nextLoading: boolean;
-  hasCorrect: boolean;
-}) {
-  const has = (k: HelpKind) => events.some((e) => e.kind === k);
-  const hintMs = remaining(locks?.hint);
-  const solMs = remaining(locks?.solution);
-  return (
-    <Card className="space-y-2 p-3">
-      <ActionButton icon={<MessageSquareText className="size-4 text-accent" />} label="1. Reformuler l’énoncé" onClick={() => onHelp('reformulation')} loading={busy === 'reformulation'} done={has('reformulation')} disabled={Boolean(busy) && busy !== 'reformulation'} />
-      <ActionButton icon={<BookOpen className="size-4 text-[#0891b2]" />} label="2. Partie de cours utile" onClick={() => onHelp('course_refs')} loading={busy === 'course_refs'} done={has('course_refs')} disabled={Boolean(busy) && busy !== 'course_refs'} />
-      <ActionButton
-        icon={<Lightbulb className="size-4 text-warn" />}
-        label="3. Une indication"
-        onClick={() => onHelp('hint')}
-        loading={busy === 'hint'}
-        done={has('hint')}
-        disabled={hintMs !== 0 || (Boolean(busy) && busy !== 'hint')}
-        extra={!has('hint') && <LockedLabel ms={hintMs} lock={locks?.hint} />}
-      />
-      <ActionButton
-        icon={<CheckCircle2 className="size-4 text-ok" />}
-        label="4. La solution"
-        onClick={() => onHelp('solution')}
-        loading={busy === 'solution'}
-        done={has('solution')}
-        disabled={solMs !== 0 || (Boolean(busy) && busy !== 'solution')}
-        extra={!has('solution') && <LockedLabel ms={solMs} lock={locks?.solution} />}
-      />
-      <ActionButton icon={<ArrowRight className="size-4 text-muted" />} label={hasCorrect ? '5. Question suivante' : '5. Passer à la question suivante'} onClick={onNext} loading={nextLoading} disabled={Boolean(busy)} />
-    </Card>
-  );
-}
-
-function CorrectBox({ onNext, loading }: { onNext: () => void; loading: boolean }) {
-  return (
-    <div className="space-y-3 rounded-xl border border-ok/40 bg-ok-soft px-4 py-4 text-ok">
-      <p className="flex items-center gap-2 text-lg font-semibold">
-        <CheckCircle2 className="size-5" /> Correct, bravo !
-      </p>
-      <p className="text-sm">Ta réponse est juste. Passe à la question suivante : la solution complète te sera montrée pour comparer.</p>
-      <Button variant="success" onClick={onNext} loading={loading} icon={<ArrowRight className="size-4" />}>
-        Question suivante
-      </Button>
+      <div className="flex min-w-32 max-w-sm flex-1 gap-1" aria-hidden={!canJump}>
+        {outline.map((o, i) => {
+          const isCurrent = o.id === currentId;
+          const label = `Question ${i + 1} (${o.exerciseTitle} — ${o.label}) : ${isCurrent ? 'en cours' : STATUS_META[o.status].label}`;
+          return (
+            <button
+              type="button"
+              key={o.id}
+              disabled={!canJump}
+              title={label}
+              aria-label={label}
+              onClick={() => onJump(o.id)}
+              className={clsx(
+                'h-2 flex-1 rounded-full transition-colors',
+                isCurrent ? 'bg-accent' : o.answered && o.status === 'seen' ? 'bg-blue-300' : STATUS_META[o.status].bar,
+                canJump && 'cursor-pointer hover:opacity-75',
+              )}
+            />
+          );
+        })}
+      </div>
+      {(correct > 0 || wrong > 0) && (
+        <span className="inline-flex items-center gap-3 text-sm text-ink-3">
+          {correct > 0 && (
+            <span className="inline-flex items-center gap-1">
+              <CheckCircle2 className="size-4 text-green-600" /> {correct} juste{correct > 1 ? 's' : ''}
+            </span>
+          )}
+          {wrong > 0 && (
+            <span className="inline-flex items-center gap-1">
+              <XCircle className="size-4 text-red-600" /> {wrong} fausse{wrong > 1 ? 's' : ''}
+            </span>
+          )}
+        </span>
+      )}
     </div>
   );
 }
 
 function highlight(text: string, needle: string | undefined): ReactNode {
-  if (!needle) return text;
-  const i = text.indexOf(needle.trim());
+  const n = needle?.trim();
+  if (!n) return text;
+  const i = text.indexOf(n);
   if (i < 0) return text;
-  const n = needle.trim();
   return (
     <>
       {text.slice(0, i)}
@@ -551,186 +555,108 @@ function highlight(text: string, needle: string | undefined): ReactNode {
   );
 }
 
-function WrongBox({
-  attempt,
-  locks,
-  remaining,
-  onReveal,
-  revealing,
-  onSolution,
-  solutionShown,
-  solutionLoading,
-}: {
-  attempt: AttemptDto;
-  locks: LocksDto | null;
-  remaining: (l: LockInfo | null | undefined) => number | null;
-  onReveal: (what: 'location' | 'explanation') => void;
-  revealing: boolean;
-  onSolution: () => void;
-  solutionShown: boolean;
-  solutionLoading: boolean;
-}) {
-  const chain = locks?.error?.attemptId === attempt.id ? locks.error : null;
-  const showMs = remaining(chain?.showError);
-  const explainMs = remaining(chain?.explainError);
-  const solMs = solutionShown ? 0 : remaining(chain?.solution);
+function WrongCallout({ attempt, action, solutionShown }: { attempt: AttemptDto; action: ReactNode; solutionShown: boolean }) {
   const answerText = attempt.type === 'code' ? attempt.code : attempt.text;
-  const located = attempt.revealed.location !== undefined;
-  const found = located && answerText && attempt.revealed.location && answerText.includes(attempt.revealed.location.trim());
-
+  const location = attempt.revealed.location;
+  const found = location !== undefined && answerText && location.trim() && answerText.includes(location.trim());
   return (
-    <Card className="space-y-4 border-bad/40 p-5">
-      <div className="flex items-center gap-2 text-bad">
-        <XCircle className="size-5" />
-        <p className="text-lg font-semibold">{attempt.verdict === 'partiel' ? 'Partiellement faux' : 'Faux'}</p>
-      </div>
-      <p className="text-sm text-muted">Ta réponse n’est pas correcte : il y a encore quelque chose à revoir. Relis ta démarche, réessaie, ou utilise les aides ci-dessous.</p>
-
-      {located && (
-        <div className="space-y-2">
-          <p className="text-sm font-medium">Où est l’erreur :</p>
-          {attempt.type === 'image' ? (
-            <div className="space-y-2">
-              {attempt.imageUrl && <img src={attempt.imageUrl} alt="Ta copie" className="max-h-64 rounded-lg border border-border" />}
-              <p className="rounded-lg bg-bad-soft px-3 py-2 text-sm text-bad">{attempt.revealed.location}</p>
-            </div>
-          ) : found ? (
-            <pre className="max-h-64 overflow-auto rounded-lg border border-border bg-surface-2 px-3 py-2 font-mono text-sm whitespace-pre-wrap">{highlight(answerText!, attempt.revealed.location)}</pre>
-          ) : (
-            <blockquote className="rounded-lg border-l-4 border-bad bg-bad-soft px-3 py-2 text-sm text-bad">{attempt.revealed.location}</blockquote>
-          )}
-        </div>
-      )}
-
-      {attempt.revealed.explanation !== undefined && (
-        <div className="space-y-1.5">
-          <p className="text-sm font-medium">Explication de l’erreur :</p>
-          <div className="rounded-lg bg-surface-2 px-3 py-2">
+    <Callout tone="red" icon={<XCircle className="size-4" />} title={attempt.verdict === 'partiel' ? 'Pas tout à fait' : 'Faux'}>
+      <div className="space-y-3">
+        <p className="text-sm">Ta réponse n’est pas correcte. Relis ta démarche et réessaie, ou avance pas à pas avec le bouton ci-dessous.</p>
+        {location !== undefined && (
+          <div className="space-y-1">
+            <p className="text-sm font-semibold">Où est l’erreur</p>
+            {attempt.type === 'image' ? (
+              <p className="rounded bg-page px-3 py-2 text-sm text-ink">{location}</p>
+            ) : found ? (
+              <pre className="max-h-48 overflow-auto rounded bg-page px-3 py-2 font-mono text-sm whitespace-pre-wrap text-ink">{highlight(answerText!, location)}</pre>
+            ) : (
+              <blockquote className="rounded bg-page px-3 py-2 text-sm text-ink">« {location} »</blockquote>
+            )}
+          </div>
+        )}
+        {attempt.revealed.explanation !== undefined && (
+          <div className="space-y-1">
+            <p className="text-sm font-semibold">Pourquoi c’est faux</p>
             <Markdown className="text-sm">{attempt.revealed.explanation}</Markdown>
           </div>
-        </div>
-      )}
-
-      <div className="space-y-2">
-        {!located && (
-          <ActionButton icon={<Eye className="size-4 text-bad" />} label="Montrer où est l’erreur" onClick={() => onReveal('location')} loading={revealing} disabled={showMs !== 0} extra={<LockedLabel ms={showMs} lock={chain?.showError} />} />
         )}
-        {attempt.revealed.explanation === undefined && (
-          <ActionButton
-            icon={<SearchCheck className="size-4 text-bad" />}
-            label="Expliquer l’erreur"
-            onClick={() => onReveal('explanation')}
-            loading={revealing && located}
-            disabled={!located || explainMs !== 0}
-            extra={<LockedLabel ms={located ? explainMs : null} lock={located ? chain?.explainError : { unlocked: false, remainingMs: null, reason: 'Montre d’abord l’erreur.' }} />}
-          />
-        )}
-        {!solutionShown && (
-          <ActionButton
-            icon={<CheckCircle2 className="size-4 text-ok" />}
-            label="Donner la solution"
-            onClick={onSolution}
-            loading={solutionLoading}
-            disabled={solMs !== 0}
-            extra={<LockedLabel ms={solMs} lock={chain?.solution} />}
-          />
+        {action && <div>{action}</div>}
+        {solutionShown && (
+          <button type="button" className="text-sm underline-offset-2 hover:underline" onClick={() => document.getElementById('help-solution')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}>
+            La solution est affichée sous l’énoncé →
+          </button>
         )}
       </div>
-    </Card>
+    </Callout>
+  );
+}
+
+function AnswerReadOnly({ attempt, title = 'Ta réponse' }: { attempt: AttemptDto; title?: string }) {
+  return (
+    <div className="space-y-2">
+      <p className="text-xs font-semibold tracking-wide text-ink-3 uppercase">{title}</p>
+      {attempt.type === 'image' && attempt.imageUrl ? (
+        <img src={attempt.imageUrl} alt="Ta copie" className="max-h-96 rounded-lg" />
+      ) : attempt.type === 'code' ? (
+        <pre className="overflow-auto rounded-lg bg-block px-4 py-3 font-mono text-sm whitespace-pre-wrap">{attempt.code}</pre>
+      ) : (
+        <div className="rounded-lg bg-block px-4 py-3">
+          <Markdown className="text-sm">{attempt.text ?? ''}</Markdown>
+        </div>
+      )}
+    </div>
   );
 }
 
 function AttemptHistory({ attempts }: { attempts: AttemptDto[] }) {
   return (
-    <details className="rounded-xl border border-border bg-surface">
-      <summary className="cursor-pointer px-4 py-3 text-sm font-medium">Tentatives précédentes ({attempts.length})</summary>
-      <div className="space-y-3 border-t border-border px-4 py-3">
+    <Toggle summary={<span className="text-ink-3">Essais précédents ({attempts.length})</span>}>
+      <div className="space-y-4">
         {attempts.map((a, i) => (
           <div key={a.id} className="space-y-1">
-            <p className="flex items-center gap-2 text-xs text-muted">
-              Tentative {i + 1} <Badge tone={a.verdict === 'correct' ? 'ok' : 'bad'}>{a.verdict === 'correct' ? 'juste' : a.verdict === 'partiel' ? 'partielle' : 'fausse'}</Badge>
+            <p className="flex items-center gap-2 text-xs text-ink-3">
+              Essai {i + 1}
+              <Tag tone={a.verdict === 'correct' ? 'green' : 'red'}>
+                {a.verdict === 'correct' ? <CheckCircle2 className="size-3" /> : <XCircle className="size-3" />}
+                {a.verdict === 'correct' ? 'juste' : a.verdict === 'partiel' ? 'incomplet' : 'faux'}
+              </Tag>
             </p>
             {a.type === 'image' && a.imageUrl ? (
-              <img src={a.imageUrl} alt="" className="max-h-40 rounded-md border border-border" />
+              <img src={a.imageUrl} alt="" className="max-h-48 rounded" />
             ) : (
-              <pre className="max-h-40 overflow-auto rounded-md bg-surface-2 px-3 py-2 font-mono text-xs whitespace-pre-wrap">{a.type === 'code' ? a.code : a.text}</pre>
+              <pre className="max-h-48 overflow-auto rounded bg-block px-3 py-2 font-mono text-xs whitespace-pre-wrap">{a.type === 'code' ? a.code : a.text}</pre>
             )}
           </div>
         ))}
       </div>
-    </details>
+    </Toggle>
   );
 }
 
-function Transition({
-  attempts,
-  solution,
-  streaming,
-  onLoadSolution,
-  onContinue,
-  continuing,
-  isLast,
-}: {
-  attempts: AttemptDto[];
-  solution?: HelpEventDto;
-  streaming: string | null;
-  onLoadSolution: () => void;
-  onContinue: () => void;
-  continuing: boolean;
-  isLast: boolean;
-}) {
-  const requested = useRef(false);
-  useEffect(() => {
-    if (!solution && !requested.current) {
-      requested.current = true;
-      onLoadSolution();
-    }
-  }, [solution]);
+function TransitionPanel({ attempts, ready, isLast, continuing, onContinue }: { attempts: AttemptDto[]; ready: boolean; isLast: boolean; continuing: boolean; onContinue: () => void }) {
   const firstTry = attempts.length > 0 && attempts[0].verdict === 'correct';
   const correct = attempts.some((a) => a.verdict === 'correct');
+  const last = attempts[attempts.length - 1];
   return (
-    <div className="space-y-4">
-      <div className={clsx('rounded-xl border px-4 py-3 text-sm', correct ? 'border-ok/40 bg-ok-soft text-ok' : 'border-border bg-surface-2')}>
-        {firstTry
-          ? 'Ta réponse était juste dès le premier essai : voici la solution complète pour comparer.'
-          : correct
-            ? 'Tu as trouvé la bonne réponse : relis la solution complète pour consolider.'
-            : 'Voici la solution complète et expliquée de cette question. Prends le temps de la comprendre avant de continuer.'}
-      </div>
-      {solution ? (
-        <HelpCard kind="solution" contentMd={solution.contentMd} solutionSource={solution.solutionSource} />
-      ) : (
-        <HelpCard kind="solution" contentMd={streaming ?? ''} streaming />
-      )}
-      <Button variant="primary" className="w-full" onClick={onContinue} loading={continuing} disabled={!solution} icon={<ChevronRight className="size-4" />}>
-        {isLast ? 'Terminer et voir mon bilan' : 'Continuer'}
-      </Button>
-    </div>
-  );
-}
-
-function ExamNav({ answered, canPrev, canNext, onPrev, onNext, onFinish }: { answered: boolean; canPrev: boolean; canNext: boolean; onPrev: () => void; onNext: () => void; onFinish: () => void }) {
-  return (
-    <Card className="space-y-3 p-4">
-      {answered && (
-        <p className="flex items-center gap-2 text-sm text-ok">
-          <CheckCircle2 className="size-4" /> Réponse enregistrée. Tu peux la remplacer tant que l’épreuve n’est pas terminée.
-        </p>
-      )}
-      <div className="flex justify-between gap-2">
-        <Button disabled={!canPrev} onClick={onPrev} icon={<ChevronLeft className="size-4" />}>
-          Précédente
+    <>
+      <PanelBody title="Avant de continuer">
+        <Callout tone={correct ? 'green' : 'blue'} icon={correct ? <CheckCircle2 className="size-4" /> : <CircleDashed className="size-4" />}>
+          <p className="text-sm">
+            {firstTry
+              ? 'Juste dès le premier essai ! Compare ta démarche avec la solution complète, affichée sous l’énoncé.'
+              : correct
+                ? 'Tu as trouvé la bonne réponse. Relis la solution complète, sous l’énoncé, pour consolider.'
+                : 'Prends le temps de comprendre la solution expliquée, affichée sous l’énoncé, avant de continuer.'}
+          </p>
+        </Callout>
+        {last && <AnswerReadOnly attempt={last} title="Ta dernière réponse" />}
+      </PanelBody>
+      <PanelFooter>
+        <Button variant="primary" size="lg" className="w-full" onClick={onContinue} loading={continuing} disabled={!ready} icon={<ChevronRight className="size-4" />}>
+          {ready ? (isLast ? 'Terminer et voir mon bilan' : 'Continuer') : 'Préparation de la solution…'}
         </Button>
-        {canNext ? (
-          <Button variant="primary" onClick={onNext}>
-            Suivante <ChevronRight className="size-4" />
-          </Button>
-        ) : (
-          <Button variant="danger" onClick={onFinish} icon={<Flag className="size-4" />}>
-            Terminer l’épreuve
-          </Button>
-        )}
-      </div>
-    </Card>
+      </PanelFooter>
+    </>
   );
 }

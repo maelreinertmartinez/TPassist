@@ -1,19 +1,30 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { UNIT_KIND_LABELS, type EditorExercise, type EditorQuestion, type EditorSection, type EditorUnit, type UnitKind } from '@tpassist/shared';
-import { ArrowLeft, CheckCircle2, Combine, Eye, Pencil, Plus, Save, Trash2 } from 'lucide-react';
-import { useEffect, useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import clsx from 'clsx';
+import { CheckCircle2, Combine, Eye, FileText, Pencil, Plus, Trash2 } from 'lucide-react';
+import { useEffect, useState, type ReactNode } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
 import { Markdown } from '../components/Markdown';
-import { Badge, Button, Card, ErrorBox, Field, inputClass, Modal, Spinner } from '../components/ui';
+import { Button, Callout, ErrorBox, Field, IconButton, inlineInputClass, inputClass, Modal, Segmented, Spinner, Tag, Toggle, useConfirm } from '../components/ui';
 import { api } from '../lib/api';
+import { useBreadcrumbs } from '../lib/breadcrumbs';
+
+type OnSaved = (d: EditorUnit) => void;
 
 export function UnitEditor() {
   const { unitId } = useParams<{ unitId: string }>();
   const qc = useQueryClient();
   const navigate = useNavigate();
+  const confirm = useConfirm();
   const key = ['editor', unitId];
   const ed = useQuery({ queryKey: key, queryFn: () => api.get<EditorUnit>(`/api/units/${unitId}/editor`) });
-  const set = (d: EditorUnit) => qc.setQueryData(key, d);
+  const course = useQuery({
+    queryKey: ['course-name', ed.data?.unit.courseId],
+    queryFn: () => api.get<{ course: { name: string } }>(`/api/courses/${ed.data!.unit.courseId}`),
+    enabled: Boolean(ed.data),
+  });
+  useBreadcrumbs(ed.data ? [{ label: course.data?.course.name ?? 'Cours', to: `/courses/${ed.data.unit.courseId}` }, { label: `Structure · ${ed.data.unit.title}` }] : []);
+  const set: OnSaved = (d) => qc.setQueryData(key, d);
   const [mergeOpen, setMergeOpen] = useState(false);
 
   const removeUnit = useMutation({
@@ -21,57 +32,54 @@ export function UnitEditor() {
     onSuccess: () => navigate(`/courses/${ed.data?.unit.courseId}`),
   });
 
-  if (ed.isLoading) return <div className="p-8"><Spinner label="Chargement…" /></div>;
-  if (ed.error || !ed.data) return <div className="p-8"><ErrorBox error={ed.error ?? 'Partie introuvable'} /></div>;
+  if (ed.isLoading) return <Page><Spinner label="Chargement…" /></Page>;
+  if (ed.error || !ed.data) return <Page><ErrorBox error={ed.error ?? 'Partie introuvable'} /></Page>;
   const { unit } = ed.data;
 
   return (
-    <div className="mx-auto max-w-4xl px-4 py-6 sm:px-6">
-      <Link to={`/courses/${unit.courseId}`} className="mb-4 inline-flex items-center gap-1 text-sm text-muted hover:text-ink">
-        <ArrowLeft className="size-4" /> Retour au cours
-      </Link>
-      <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <p className="text-sm text-muted">Éditeur de structure</p>
-          <h1 className="text-xl font-semibold">{unit.title}</h1>
-          {unit.documentName && (
-            <p className="mt-1 text-xs text-muted">
-              {unit.documentName} · pages {unit.pageStart}–{unit.pageEnd}{' '}
-              <a className="text-accent hover:underline" href={`/api/documents/${unit.documentId}/file#page=${unit.pageStart}`} target="_blank" rel="noreferrer">
-                ouvrir le PDF
-              </a>
-            </p>
-          )}
-        </div>
-        <div className="flex gap-2">
-          {unit.kind !== 'corrige' && (
-            <Button icon={<Combine className="size-4" />} onClick={() => setMergeOpen(true)}>
-              Fusionner…
+    <Page>
+      <UnitHeader
+        data={ed.data}
+        onSaved={set}
+        actions={
+          <>
+            {unit.kind !== 'corrige' && (
+              <Button variant="tertiary" icon={<Combine className="size-4" />} onClick={() => setMergeOpen(true)}>
+                Fusionner…
+              </Button>
+            )}
+            <Button
+              variant="danger-quiet"
+              icon={<Trash2 className="size-4" />}
+              loading={removeUnit.isPending}
+              onClick={async () => {
+                if (
+                  await confirm({
+                    title: `Supprimer « ${unit.title} » ?`,
+                    message: 'Cette partie, ses questions et les séances associées seront supprimées. Le PDF reste disponible pour une nouvelle analyse.',
+                    confirmLabel: 'Supprimer la partie',
+                    danger: true,
+                  })
+                )
+                  removeUnit.mutate();
+              }}
+            >
+              Supprimer
             </Button>
-          )}
-          <Button
-            variant="danger"
-            icon={<Trash2 className="size-4" />}
-            loading={removeUnit.isPending}
-            onClick={() => confirm('Supprimer cette partie (et les sessions associées) ?') && removeUnit.mutate()}
-          >
-            Supprimer
-          </Button>
-        </div>
-      </div>
-
-      <UnitMetaForm data={ed.data} onSaved={set} />
+          </>
+        }
+      />
 
       {unit.kind === 'corrige' ? (
         <CorrigeEditor data={ed.data} onSaved={set} />
       ) : unit.kind === 'cours' ? (
-        <div className="mt-6 space-y-3">
+        <div className="space-y-1">
           {ed.data.sections.map((s) => (
             <SectionEditor key={s.id} section={s} onSaved={set} />
           ))}
         </div>
       ) : (
-        <div className="mt-6 space-y-5">
+        <div className="space-y-12">
           {ed.data.exercises.map((ex) => (
             <ExerciseEditor key={ex.id} ex={ex} onSaved={set} />
           ))}
@@ -80,176 +88,238 @@ export function UnitEditor() {
       )}
 
       <MergeModal data={ed.data} open={mergeOpen} onClose={() => setMergeOpen(false)} onSaved={set} />
-    </div>
+    </Page>
   );
 }
 
-function UnitMetaForm({ data, onSaved }: { data: EditorUnit; onSaved: (d: EditorUnit) => void }) {
+function Page({ children }: { children: ReactNode }) {
+  return <div className="mx-auto max-w-3xl px-4 pt-12 pb-24 sm:px-6">{children}</div>;
+}
+
+/** Petit indicateur de sauvegarde automatique. */
+function SaveState({ pending, error }: { pending: boolean; error: unknown }) {
+  if (error) return <span className="text-xs text-red-600">Non enregistré : {error instanceof Error ? error.message : String(error)}</span>;
+  if (pending) return <span className="text-xs text-ink-3">Enregistrement…</span>;
+  return null;
+}
+
+const EXERCISE_KINDS: UnitKind[] = ['td', 'tp', 'ei'];
+
+function UnitHeader({ data, onSaved, actions }: { data: EditorUnit; onSaved: OnSaved; actions: ReactNode }) {
   const { unit } = data;
   const [title, setTitle] = useState(unit.title);
-  const [kind, setKind] = useState<UnitKind>(unit.kind);
-  const [duration, setDuration] = useState<string>(unit.meta.durationMinutes ? String(unit.meta.durationMinutes) : '');
-  useEffect(() => {
-    setTitle(unit.title);
-    setKind(unit.kind);
-  }, [unit.id]);
+  const [duration, setDuration] = useState(unit.meta.durationMinutes ? String(unit.meta.durationMinutes) : '');
+  useEffect(() => setTitle(unit.title), [unit.id, unit.title]);
   const save = useMutation({
-    mutationFn: () =>
-      api.patch<EditorUnit>(`/api/units/${unit.id}`, {
-        title,
-        kind,
-        ...(kind === 'ei' ? { durationMinutes: duration ? Number(duration) : null } : {}),
-      }),
+    mutationFn: (patch: Record<string, unknown>) => api.patch<EditorUnit>(`/api/units/${unit.id}`, patch),
     onSuccess: onSaved,
   });
-  const exerciseKinds: UnitKind[] = ['td', 'tp', 'ei'];
   return (
-    <Card className="space-y-4 p-4">
-      <div className="grid gap-4 sm:grid-cols-[1fr_160px_140px]">
-        <Field label="Titre">
-          <input className={inputClass} value={title} onChange={(e) => setTitle(e.target.value)} />
-        </Field>
-        <Field label="Type">
-          <select className={inputClass} value={kind} onChange={(e) => setKind(e.target.value as UnitKind)} disabled={!exerciseKinds.includes(unit.kind)}>
-            {(exerciseKinds.includes(unit.kind) ? exerciseKinds : [unit.kind]).map((k) => (
-              <option key={k} value={k}>
-                {UNIT_KIND_LABELS[k]}
-              </option>
-            ))}
-          </select>
-        </Field>
-        {kind === 'ei' && (
-          <Field label="Durée (min)">
-            <input type="number" className={inputClass} value={duration} onChange={(e) => setDuration(e.target.value)} />
-          </Field>
+    <header className="mb-12">
+      <p className="flex flex-wrap items-center gap-2 text-sm text-ink-3">
+        Structure · {UNIT_KIND_LABELS[unit.kind]}
+        {unit.documentName && (
+          <>
+            {' · '}
+            <a className="inline-flex items-center gap-1 hover:text-ink hover:underline" href={`/api/documents/${unit.documentId}/file#page=${unit.pageStart}`} target="_blank" rel="noreferrer">
+              <FileText className="size-4" /> {unit.documentName}, p. {unit.pageStart}–{unit.pageEnd}
+            </a>
+          </>
         )}
+      </p>
+      <input
+        aria-label="Titre"
+        className={clsx(inlineInputClass, '-ml-2 mt-2 text-3xl font-semibold tracking-tight')}
+        value={title}
+        onChange={(e) => setTitle(e.target.value)}
+        onBlur={() => title.trim() && title !== unit.title && save.mutate({ title })}
+      />
+      <div className="mt-4 flex flex-wrap items-center justify-between gap-4">
+        <div className="flex flex-wrap items-center gap-4">
+          {EXERCISE_KINDS.includes(unit.kind) && (
+            <Segmented
+              value={unit.kind}
+              onChange={(kind) => save.mutate({ kind })}
+              items={EXERCISE_KINDS.map((k) => ({ value: k, label: UNIT_KIND_LABELS[k] }))}
+            />
+          )}
+          {unit.kind === 'ei' && (
+            <label className="flex items-center gap-2 text-sm text-ink-3">
+              Durée
+              <input
+                type="number"
+                className={clsx(inputClass, 'w-24')}
+                value={duration}
+                onChange={(e) => setDuration(e.target.value)}
+                onBlur={() => save.mutate({ durationMinutes: duration ? Number(duration) : null })}
+              />
+              min
+            </label>
+          )}
+          <SaveState pending={save.isPending} error={save.error} />
+        </div>
+        <div className="flex gap-1">{actions}</div>
       </div>
-      <div className="flex items-center justify-between gap-3">
-        <ErrorBox error={save.error} />
-        <Button variant="primary" size="sm" className="ml-auto" icon={<Save className="size-3.5" />} loading={save.isPending} onClick={() => save.mutate()}>
-          Enregistrer
-        </Button>
-      </div>
-    </Card>
+    </header>
   );
 }
 
-function MdField({ label, value, onChange, rows = 4 }: { label: string; value: string; onChange: (v: string) => void; rows?: number }) {
+/** Champ Markdown édité en place, avec aperçu, enregistré quand on quitte le champ. */
+function MdField({ label, value, onCommit, rows = 3, placeholder }: { label?: string; value: string; onCommit: (v: string) => void; rows?: number; placeholder?: string }) {
+  const [text, setText] = useState(value);
   const [preview, setPreview] = useState(false);
+  useEffect(() => setText(value), [value]);
   return (
-    <div className="space-y-1.5">
-      <div className="flex items-center justify-between">
-        <span className="text-sm font-medium">{label}</span>
-        <button className="inline-flex items-center gap-1 text-xs text-muted hover:text-ink" onClick={() => setPreview(!preview)}>
-          {preview ? <Pencil className="size-3" /> : <Eye className="size-3" />} {preview ? 'Éditer' : 'Aperçu'}
-        </button>
+    <div>
+      <div className="mb-1 flex min-h-8 items-center justify-between">
+        {label && <span className="text-xs font-semibold tracking-wide text-ink-3 uppercase">{label}</span>}
+        <IconButton label={preview ? 'Éditer' : 'Aperçu'} onClick={() => setPreview(!preview)} active={preview} className="ml-auto">
+          {preview ? <Pencil className="size-4" /> : <Eye className="size-4" />}
+        </IconButton>
       </div>
       {preview ? (
-        <div className="min-h-16 rounded-lg border border-border bg-surface-2 px-3 py-2">
-          <Markdown className="text-sm">{value || '*(vide)*'}</Markdown>
+        <div className="rounded px-2 py-1">
+          <Markdown className="text-sm">{text || '*(vide)*'}</Markdown>
         </div>
       ) : (
-        <textarea rows={rows} className={`${inputClass} font-mono`} value={value} onChange={(e) => onChange(e.target.value)} />
+        <textarea
+          rows={rows}
+          className={clsx(inlineInputClass, 'resize-y font-mono text-sm leading-6')}
+          value={text}
+          placeholder={placeholder}
+          onChange={(e) => setText(e.target.value)}
+          onBlur={() => text !== value && onCommit(text)}
+        />
       )}
     </div>
   );
 }
 
-function ExerciseEditor({ ex, onSaved }: { ex: EditorExercise; onSaved: (d: EditorUnit) => void }) {
+function ExerciseEditor({ ex, onSaved }: { ex: EditorExercise; onSaved: OnSaved }) {
+  const confirm = useConfirm();
   const [title, setTitle] = useState(ex.title);
-  const [context, setContext] = useState(ex.contextMd);
-  const dirty = title !== ex.title || context !== ex.contextMd;
-  const save = useMutation({ mutationFn: () => api.patch<EditorUnit>(`/api/exercises/${ex.id}`, { title, contextMd: context }), onSuccess: onSaved });
+  useEffect(() => setTitle(ex.title), [ex.title]);
+  const save = useMutation({ mutationFn: (patch: { title?: string; contextMd?: string }) => api.patch<EditorUnit>(`/api/exercises/${ex.id}`, patch), onSuccess: onSaved });
   const remove = useMutation({ mutationFn: () => api.del<EditorUnit>(`/api/exercises/${ex.id}`), onSuccess: onSaved });
   const add = useMutation({ mutationFn: () => api.post<EditorUnit>(`/api/exercises/${ex.id}/questions`), onSuccess: onSaved });
   return (
-    <Card className="space-y-4 p-4">
-      <div className="flex items-end gap-3">
-        <Field label="Exercice">
-          <input className={inputClass} value={title} onChange={(e) => setTitle(e.target.value)} />
-        </Field>
-        <button className="mb-2 rounded p-1.5 text-muted hover:bg-surface-2 hover:text-bad" title="Supprimer l’exercice" onClick={() => confirm('Supprimer cet exercice et ses questions ?') && remove.mutate()}>
+    <section className="space-y-4">
+      <div className="group flex items-center gap-2">
+        <input
+          aria-label="Titre de l’exercice"
+          className={clsx(inlineInputClass, '-ml-2 text-xl font-semibold tracking-tight')}
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          onBlur={() => title.trim() && title !== ex.title && save.mutate({ title })}
+        />
+        <SaveState pending={save.isPending} error={save.error} />
+        <IconButton
+          label="Supprimer l’exercice"
+          onClick={async () => {
+            if (await confirm({ title: `Supprimer « ${ex.title} » ?`, message: `Ses ${ex.questions.length} question(s) seront supprimées.`, confirmLabel: 'Supprimer', danger: true })) remove.mutate();
+          }}
+        >
           <Trash2 className="size-4" />
-        </button>
+        </IconButton>
       </div>
-      <MdField label="Énoncé commun (données, valeurs, matrices)" value={context} onChange={setContext} />
-      {dirty && (
-        <Button size="sm" variant="primary" loading={save.isPending} onClick={() => save.mutate()} icon={<Save className="size-3.5" />}>
-          Enregistrer l’exercice
-        </Button>
-      )}
-      <div className="space-y-3 border-t border-border pt-4">
+      <MdField label="Énoncé commun" value={ex.contextMd} onCommit={(contextMd) => save.mutate({ contextMd })} placeholder="Données de l’exercice : valeurs, matrices…" />
+      <div className="space-y-1">
         {ex.questions.map((q) => (
           <QuestionEditor key={q.id} q={q} onSaved={onSaved} />
         ))}
-        <Button size="sm" variant="ghost" icon={<Plus className="size-3.5" />} loading={add.isPending} onClick={() => add.mutate()}>
-          Ajouter une question
-        </Button>
       </div>
-    </Card>
+      <Button size="sm" variant="tertiary" icon={<Plus className="size-4" />} loading={add.isPending} onClick={() => add.mutate()}>
+        Ajouter une question
+      </Button>
+    </section>
   );
 }
 
-function QuestionEditor({ q, onSaved }: { q: EditorQuestion; onSaved: (d: EditorUnit) => void }) {
+function QuestionEditor({ q, onSaved }: { q: EditorQuestion; onSaved: OnSaved }) {
+  const confirm = useConfirm();
   const [label, setLabel] = useState(q.label);
-  const [statement, setStatement] = useState(q.statementMd);
   const [points, setPoints] = useState(q.points === null ? '' : String(q.points));
   const [figures, setFigures] = useState(q.figurePages.join(', '));
-  const [official, setOfficial] = useState(q.officialSolutionMd ?? '');
-  const [showOfficial, setShowOfficial] = useState(false);
-  const dirty =
-    label !== q.label || statement !== q.statementMd || points !== (q.points === null ? '' : String(q.points)) || figures !== q.figurePages.join(', ') || official !== (q.officialSolutionMd ?? '');
-  const save = useMutation({
-    mutationFn: () =>
-      api.patch<EditorUnit>(`/api/questions/${q.id}`, {
-        label,
-        statementMd: statement,
-        points: points === '' ? null : Number(points),
-        figurePages: figures
-          .split(/[,\s]+/)
-          .map((x) => Number(x))
-          .filter((n) => Number.isInteger(n) && n > 0),
-        officialSolutionMd: official,
-      }),
-    onSuccess: onSaved,
-  });
+  useEffect(() => {
+    setLabel(q.label);
+    setPoints(q.points === null ? '' : String(q.points));
+    setFigures(q.figurePages.join(', '));
+  }, [q.label, q.points, q.figurePages.join(',')]);
+  const save = useMutation({ mutationFn: (patch: Record<string, unknown>) => api.patch<EditorUnit>(`/api/questions/${q.id}`, patch), onSuccess: onSaved });
   const remove = useMutation({ mutationFn: () => api.del<EditorUnit>(`/api/questions/${q.id}`), onSuccess: onSaved });
   return (
-    <div className="space-y-3 rounded-lg border border-border p-3">
-      <div className="grid gap-3 sm:grid-cols-[100px_100px_1fr_auto] sm:items-end">
-        <Field label="Numéro">
-          <input className={inputClass} value={label} onChange={(e) => setLabel(e.target.value)} />
-        </Field>
-        <Field label="Points">
-          <input className={inputClass} value={points} onChange={(e) => setPoints(e.target.value)} placeholder="—" />
-        </Field>
-        <Field label="Pages de figures">
-          <input className={inputClass} value={figures} onChange={(e) => setFigures(e.target.value)} placeholder="ex. 3, 4" />
-        </Field>
-        <button className="mb-2 rounded p-1.5 text-muted hover:bg-surface-2 hover:text-bad" title="Supprimer la question" onClick={() => confirm('Supprimer cette question ?') && remove.mutate()}>
-          <Trash2 className="size-4" />
-        </button>
-      </div>
-      <MdField label="Énoncé de la question" value={statement} onChange={setStatement} />
-      <button className="inline-flex items-center gap-1 text-xs font-medium text-accent hover:underline" onClick={() => setShowOfficial(!showOfficial)}>
-        {q.officialSolutionMd ? <CheckCircle2 className="size-3.5 text-ok" /> : <Plus className="size-3.5" />}
-        {q.officialSolutionMd ? 'Corrigé officiel associé' : 'Ajouter un corrigé officiel'}
-      </button>
-      {showOfficial && <MdField label="Corrigé officiel (laisser vide pour le retirer)" value={official} onChange={setOfficial} rows={5} />}
-      {dirty && (
-        <div className="flex items-center gap-3">
-          <Button size="sm" variant="primary" loading={save.isPending} onClick={() => save.mutate()} icon={<Save className="size-3.5" />}>
-            Enregistrer la question
-          </Button>
-          <span className="text-xs text-muted">Les aides déjà générées pour cette question seront recalculées.</span>
+    <Toggle
+      summary={
+        <span className="flex items-center justify-between gap-2">
+          <span className="truncate">
+            <span className="font-semibold">Question {q.label}</span> <span className="text-ink-3">· {q.statementMd.replace(/\s+/g, ' ').slice(0, 80)}</span>
+          </span>
+          {q.officialSolutionMd && (
+            <Tag tone="green">
+              <CheckCircle2 className="size-3" /> Corrigé
+            </Tag>
+          )}
+        </span>
+      }
+    >
+      <div className="space-y-4 pb-6">
+        <div className="flex flex-wrap items-end gap-4">
+          <Field label="Numéro">
+            <input className={clsx(inputClass, 'w-24')} value={label} onChange={(e) => setLabel(e.target.value)} onBlur={() => label !== q.label && save.mutate({ label })} />
+          </Field>
+          <Field label="Points">
+            <input
+              className={clsx(inputClass, 'w-24')}
+              value={points}
+              placeholder="—"
+              onChange={(e) => setPoints(e.target.value)}
+              onBlur={() => points !== (q.points === null ? '' : String(q.points)) && save.mutate({ points: points === '' ? null : Number(points) })}
+            />
+          </Field>
+          <Field label="Pages de figures">
+            <input
+              className={clsx(inputClass, 'w-32')}
+              value={figures}
+              placeholder="ex. 3, 4"
+              onChange={(e) => setFigures(e.target.value)}
+              onBlur={() =>
+                figures !== q.figurePages.join(', ') &&
+                save.mutate({
+                  figurePages: figures
+                    .split(/[,\s]+/)
+                    .map(Number)
+                    .filter((n) => Number.isInteger(n) && n > 0),
+                })
+              }
+            />
+          </Field>
+          <SaveState pending={save.isPending} error={save.error} />
         </div>
-      )}
-      <ErrorBox error={save.error} />
-    </div>
+        <MdField label="Énoncé" value={q.statementMd} rows={4} onCommit={(statementMd) => save.mutate({ statementMd })} />
+        <MdField
+          label="Corrigé officiel"
+          value={q.officialSolutionMd ?? ''}
+          rows={3}
+          placeholder="Optionnel : colle ici la correction officielle de cette question."
+          onCommit={(officialSolutionMd) => save.mutate({ officialSolutionMd })}
+        />
+        <p className="text-xs text-ink-3">Modifier l’énoncé ou le corrigé recalcule les aides déjà générées pour cette question.</p>
+        <Button
+          size="sm"
+          variant="danger-quiet"
+          icon={<Trash2 className="size-4" />}
+          onClick={async () => {
+            if (await confirm({ title: `Supprimer la question ${q.label} ?`, message: 'Ses réponses et aides enregistrées seront aussi supprimées.', confirmLabel: 'Supprimer', danger: true })) remove.mutate();
+          }}
+        >
+          Supprimer la question
+        </Button>
+      </div>
+    </Toggle>
   );
 }
 
-function AddExerciseButton({ unitId, onSaved }: { unitId: string; onSaved: (d: EditorUnit) => void }) {
+function AddExerciseButton({ unitId, onSaved }: { unitId: string; onSaved: OnSaved }) {
   const add = useMutation({ mutationFn: () => api.post<EditorUnit>(`/api/units/${unitId}/exercises`), onSuccess: onSaved });
   return (
     <Button icon={<Plus className="size-4" />} loading={add.isPending} onClick={() => add.mutate()}>
@@ -258,43 +328,37 @@ function AddExerciseButton({ unitId, onSaved }: { unitId: string; onSaved: (d: E
   );
 }
 
-function SectionEditor({ section, onSaved }: { section: EditorSection; onSaved: (d: EditorUnit) => void }) {
+function SectionEditor({ section, onSaved }: { section: EditorSection; onSaved: OnSaved }) {
   const [title, setTitle] = useState(section.title);
   const [summary, setSummary] = useState(section.summary);
-  const [content, setContent] = useState(section.contentMd);
-  const dirty = title !== section.title || summary !== section.summary || content !== section.contentMd;
-  const save = useMutation({ mutationFn: () => api.patch<EditorUnit>(`/api/sections/${section.id}`, { title, summary, contentMd: content }), onSuccess: onSaved });
+  const save = useMutation({ mutationFn: (patch: Record<string, unknown>) => api.patch<EditorUnit>(`/api/sections/${section.id}`, patch), onSuccess: onSaved });
   return (
-    <details className="rounded-xl border border-border bg-surface">
-      <summary className="cursor-pointer px-4 py-3 text-sm font-medium">
-        {section.title} <span className="text-xs font-normal text-muted">p. {section.pageStart}–{section.pageEnd}</span>
-      </summary>
-      <div className="space-y-3 border-t border-border p-4">
-        <Field label="Titre">
-          <input className={inputClass} value={title} onChange={(e) => setTitle(e.target.value)} />
-        </Field>
-        <Field label="Résumé">
-          <textarea rows={2} className={inputClass} value={summary} onChange={(e) => setSummary(e.target.value)} />
-        </Field>
-        <MdField label="Contenu" value={content} onChange={setContent} rows={12} />
-        {dirty && (
-          <Button size="sm" variant="primary" loading={save.isPending} onClick={() => save.mutate()} icon={<Save className="size-3.5" />}>
-            Enregistrer la section
-          </Button>
-        )}
+    <Toggle
+      summary={
+        <span>
+          {section.title} <span className="text-ink-3">· p. {section.pageStart}–{section.pageEnd}</span>
+        </span>
+      }
+    >
+      <div className="space-y-4 pb-6">
+        <input className={clsx(inlineInputClass, '-ml-2 text-lg font-semibold')} value={title} onChange={(e) => setTitle(e.target.value)} onBlur={() => title !== section.title && save.mutate({ title })} />
+        <div>
+          <span className="text-xs font-semibold tracking-wide text-ink-3 uppercase">Résumé</span>
+          <textarea rows={2} className={clsx(inlineInputClass, 'text-sm leading-6')} value={summary} onChange={(e) => setSummary(e.target.value)} onBlur={() => summary !== section.summary && save.mutate({ summary })} />
+        </div>
+        <MdField label="Contenu" value={section.contentMd} rows={12} onCommit={(contentMd) => save.mutate({ contentMd })} />
+        <SaveState pending={save.isPending} error={save.error} />
       </div>
-    </details>
+    </Toggle>
   );
 }
 
-function CorrigeEditor({ data, onSaved }: { data: EditorUnit; onSaved: (d: EditorUnit) => void }) {
+function CorrigeEditor({ data, onSaved }: { data: EditorUnit; onSaved: OnSaved }) {
   const solutions = data.unit.meta.solutions ?? [];
-  const targets = data.siblings.filter((s) => ['td', 'tp', 'ei'].includes(s.kind));
+  const targets = data.siblings.filter((s) => EXERCISE_KINDS.includes(s.kind));
   const [target, setTarget] = useState<string>(data.unit.correctsUnitId ?? '');
   const targetEditor = useQuery({ queryKey: ['editor', target], queryFn: () => api.get<EditorUnit>(`/api/units/${target}/editor`), enabled: Boolean(target) });
-  const [mapping, setMapping] = useState<Record<number, string>>(() =>
-    Object.fromEntries(solutions.map((s, i) => [i, s.matchedQuestionId ?? '']).filter(([, v]) => v)),
-  );
+  const [mapping, setMapping] = useState<Record<number, string>>(() => Object.fromEntries(solutions.map((s, i) => [i, s.matchedQuestionId ?? '']).filter(([, v]) => v)));
   const link = useMutation({
     mutationFn: (auto: boolean) =>
       api.post<EditorUnit>(`/api/units/${data.unit.id}/link-corrige`, {
@@ -313,11 +377,14 @@ function CorrigeEditor({ data, onSaved }: { data: EditorUnit; onSaved: (d: Edito
   const questions = targetEditor.data?.exercises.flatMap((e) => e.questions.map((q) => ({ id: q.id, label: `${e.title} — ${q.label}` }))) ?? [];
 
   return (
-    <div className="mt-6 space-y-4">
-      <Card className="space-y-3 p-4">
-        <Field label="Sujet corrigé" hint="Le corrigé sert de référence pour la vérification, l’indice, la solution et le bilan — il n’est jamais affiché d’office.">
+    <div className="space-y-8">
+      <Callout tone="blue" icon={<CheckCircle2 className="size-4" />}>
+        <p className="text-sm">Un corrigé n’est jamais affiché d’office : il sert de référence pour vérifier tes réponses, rédiger l’indication, la solution et le bilan.</p>
+      </Callout>
+      <div className="space-y-4">
+        <Field label="Sujet corrigé">
           <select className={inputClass} value={target} onChange={(e) => setTarget(e.target.value)}>
-            <option value="">— Non rattaché —</option>
+            <option value="">Non rattaché</option>
             {targets.map((t) => (
               <option key={t.id} value={t.id}>
                 {UNIT_KIND_LABELS[t.kind]} · {t.title}
@@ -326,43 +393,53 @@ function CorrigeEditor({ data, onSaved }: { data: EditorUnit; onSaved: (d: Edito
           </select>
         </Field>
         <div className="flex flex-wrap gap-2">
-          <Button size="sm" variant="primary" loading={link.isPending && link.variables === true} onClick={() => link.mutate(true)}>
-            Associer automatiquement (par numéros)
+          <Button variant="primary" loading={link.isPending && link.variables === true} onClick={() => link.mutate(true)}>
+            Associer automatiquement
           </Button>
-          <Button size="sm" loading={link.isPending && link.variables === false} onClick={() => link.mutate(false)}>
-            Enregistrer la correspondance ci-dessous
+          <Button loading={link.isPending && link.variables === false} onClick={() => link.mutate(false)}>
+            Enregistrer ma correspondance
           </Button>
         </div>
         <ErrorBox error={link.error} />
-      </Card>
-      {solutions.map((s, i) => (
-        <Card key={i} className="space-y-2 p-4">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="text-sm font-medium">
-              {s.exerciseLabel} {s.questionLabel && `— ${s.questionLabel}`}
-            </p>
-            {s.matchedQuestionId ? <Badge tone="ok">Associée</Badge> : <Badge>Non associée</Badge>}
+      </div>
+      <div className="space-y-6">
+        {solutions.map((s, i) => (
+          <div key={i} className="space-y-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-sm font-semibold">
+                {s.exerciseLabel} {s.questionLabel && <span className="text-ink-3">· {s.questionLabel}</span>}
+              </p>
+              {s.matchedQuestionId ? (
+                <Tag tone="green">
+                  <CheckCircle2 className="size-3" /> Associée
+                </Tag>
+              ) : (
+                <Tag>Non associée</Tag>
+              )}
+            </div>
+            <div className="max-h-48 overflow-auto rounded-lg bg-block px-4 py-3">
+              <Markdown className="text-sm">{s.solutionMd}</Markdown>
+            </div>
+            {target && (
+              <select className={inputClass} value={mapping[i] ?? ''} onChange={(e) => setMapping((m) => ({ ...m, [i]: e.target.value }))} aria-label="Question correspondante">
+                <option value="">Aucune question</option>
+                {questions.map((q) => (
+                  <option key={q.id} value={q.id}>
+                    {q.label}
+                  </option>
+                ))}
+              </select>
+            )}
           </div>
-          <Markdown className="max-h-48 overflow-auto rounded-lg bg-surface-2 px-3 py-2 text-sm">{s.solutionMd}</Markdown>
-          {target && (
-            <select className={inputClass} value={mapping[i] ?? ''} onChange={(e) => setMapping((m) => ({ ...m, [i]: e.target.value }))}>
-              <option value="">— Aucune question —</option>
-              {questions.map((q) => (
-                <option key={q.id} value={q.id}>
-                  {q.label}
-                </option>
-              ))}
-            </select>
-          )}
-        </Card>
-      ))}
+        ))}
+      </div>
     </div>
   );
 }
 
-function MergeModal({ data, open, onClose, onSaved }: { data: EditorUnit; open: boolean; onClose: () => void; onSaved: (d: EditorUnit) => void }) {
+function MergeModal({ data, open, onClose, onSaved }: { data: EditorUnit; open: boolean; onClose: () => void; onSaved: OnSaved }) {
   const isCours = data.unit.kind === 'cours';
-  const candidates = data.siblings.filter((s) => (isCours ? s.kind === 'cours' : ['td', 'tp', 'ei'].includes(s.kind)));
+  const candidates = data.siblings.filter((s) => (isCours ? s.kind === 'cours' : EXERCISE_KINDS.includes(s.kind)));
   const [source, setSource] = useState('');
   const merge = useMutation({
     mutationFn: () => api.post<EditorUnit>(`/api/units/${data.unit.id}/merge`, { sourceId: source }),
@@ -375,10 +452,10 @@ function MergeModal({ data, open, onClose, onSaved }: { data: EditorUnit; open: 
     <Modal
       open={open}
       onClose={onClose}
-      title="Fusionner une autre partie dans celle-ci"
+      title="Fusionner une autre partie ici"
       footer={
         <>
-          <Button variant="ghost" onClick={onClose}>
+          <Button variant="tertiary" onClick={onClose}>
             Annuler
           </Button>
           <Button variant="primary" disabled={!source} loading={merge.isPending} onClick={() => merge.mutate()}>
@@ -387,10 +464,12 @@ function MergeModal({ data, open, onClose, onSaved }: { data: EditorUnit; open: 
         </>
       }
     >
-      <div className="space-y-3">
-        <p className="text-sm text-muted">Les {isCours ? 'sections' : 'exercices'} de la partie choisie seront ajoutés à la fin de « {data.unit.title} », puis la partie choisie sera supprimée.</p>
-        <select className={inputClass} value={source} onChange={(e) => setSource(e.target.value)}>
-          <option value="">— Choisir —</option>
+      <div className="space-y-4">
+        <p className="text-sm text-ink-2">
+          Les {isCours ? 'sections' : 'exercices'} de la partie choisie sont ajoutés à la fin de « {data.unit.title} », puis la partie choisie est supprimée.
+        </p>
+        <select className={inputClass} value={source} onChange={(e) => setSource(e.target.value)} aria-label="Partie à fusionner">
+          <option value="">Choisir une partie</option>
           {candidates.map((c) => (
             <option key={c.id} value={c.id}>
               {UNIT_KIND_LABELS[c.kind]} · {c.title}

@@ -16,7 +16,8 @@
     "test": "npm run test -w @tpassist/server",
     "db:generate": "npm run db:generate -w @tpassist/server",
     "sample-pdf": "node scripts/make-sample-pdf.mjs",
-    "backup": "node scripts/backup.mjs"
+    "backup": "node scripts/backup.mjs",
+    "lint:design": "node scripts/check-design.mjs"
   },
   "devDependencies": {
     "concurrently": "^10.0.5",

@@ -7,7 +7,8 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/api': { target: 'http://localhost:3000', changeOrigin: false },
+      // TPASSIST_API permet de viser un autre serveur (ex. un conteneur de test sur :3001).
+      '/api': { target: process.env.TPASSIST_API ?? 'http://localhost:3000', changeOrigin: false },
     },
   },
   build: {
