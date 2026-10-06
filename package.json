@@ -1,0 +1,28 @@
+{
+  "name": "tpassist",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Assistant IA local pour TD/TP/EI basé sur le Claude Agent SDK",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -n server,web -c blue,magenta \"npm run dev -w @tpassist/server\" \"npm run dev -w @tpassist/web\"",
+    "build": "npm run build -w @tpassist/web",
+    "start": "npm run start -w @tpassist/server",
+    "typecheck": "npm run typecheck -w @tpassist/shared && npm run typecheck -w @tpassist/server && npm run typecheck -w @tpassist/web",
+    "test": "npm run test -w @tpassist/server",
+    "db:generate": "npm run db:generate -w @tpassist/server",
+    "sample-pdf": "node scripts/make-sample-pdf.mjs",
+    "backup": "node scripts/backup.mjs"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.5",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

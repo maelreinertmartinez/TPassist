@@ -1,0 +1,20 @@
+services:
+  tpassist:
+    build: .
+    image: tpassist:latest
+    container_name: tpassist
+    # Accessible uniquement depuis ta machine.
+    ports:
+      - '127.0.0.1:${TPASSIST_PORT:-3000}:3000'
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      TPASSIST_MODEL: ${TPASSIST_MODEL:-claude-opus-5-5}
+    volumes:
+      # Volume nommé : base SQLite, PDF, pages rendues, photos, conversations.
+      - tpassist-data:/data
+    restart: unless-stopped
+
+volumes:
+  tpassist-data:
