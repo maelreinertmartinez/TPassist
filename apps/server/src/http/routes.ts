@@ -1,17 +1,19 @@
 import type { FastifyInstance } from 'fastify';
 import { createReadStream, existsSync } from 'node:fs';
-import { desc, eq, sql } from 'drizzle-orm';
-import type { AiHealth, HelpKind, SessionMode, SubmitAttemptBody, UnitKind, UsageSummary } from '@tpassist/shared';
+import { desc, eq } from 'drizzle-orm';
+import type { AiHealth, AiUsageStats, HelpKind, SessionMode, SubmitAttemptBody, UnitKind } from '@tpassist/shared';
 import { authSource, pingAi } from '../ai/agent';
 import { config } from '../config';
 import { db } from '../db/client';
 import { HttpError, notFound } from '../db/repo';
-import { aiCalls, attempts, documents, jobs, reports } from '../db/schema';
+import { attempts, documents, jobs, reports } from '../db/schema';
+import { usageStats } from '../services/usage';
 import { enqueueJob, retryJob } from '../jobs/queue';
 import { pageImagePath } from '../pdf/render';
 import * as chat from '../services/chat';
 import * as coursesSvc from '../services/courses';
 import * as editor from '../services/editor';
+import * as notionsSvc from '../services/notions';
 import * as quiz from '../services/quiz';
 import * as sessionsSvc from '../services/sessions';
 import { setWeakPointStatus } from '../services/weakPoints';
@@ -35,25 +37,22 @@ export async function registerRoutes(app: FastifyInstance) {
     return healthCache;
   });
 
-  app.get('/api/usage', async (): Promise<UsageSummary> => {
-    const rows = db
-      .select({ task: aiCalls.task, calls: sql<number>`count(*)`, costUsd: sql<number>`coalesce(sum(${aiCalls.costUsd}), 0)` })
-      .from(aiCalls)
-      .groupBy(aiCalls.task)
-      .all();
-    return {
-      calls: rows.reduce((a, r) => a + Number(r.calls), 0),
-      costUsd: rows.reduce((a, r) => a + Number(r.costUsd), 0),
-      byTask: rows.map((r) => ({ task: r.task, calls: Number(r.calls), costUsd: Number(r.costUsd) })).sort((a, b) => b.costUsd - a.costUsd),
-    };
+  /** Statistiques d'utilisation de l'IA. `from` : début de période (ms, 0 = tout) ; `tz` : Date#getTimezoneOffset du navigateur. */
+  app.get<{ Querystring: { from?: string; tz?: string } }>('/api/usage/stats', async (req): Promise<AiUsageStats> => {
+    const from = Number(req.query.from ?? 0);
+    const tz = Number(req.query.tz ?? 0);
+    if (!Number.isFinite(from) || !Number.isFinite(tz) || Math.abs(tz) > 14 * 60) throw new HttpError(400, 'Paramètres invalides.');
+    return usageStats(from, tz);
   });
 
   // ---------- Cours ----------
 
   app.get('/api/courses', async () => coursesSvc.listCourses());
-  app.post<{ Body: { name: string; color?: string } }>('/api/courses', async (req) => coursesSvc.createCourse(req.body?.name ?? '', req.body?.color));
+  app.post<{ Body: { name: string; color?: string; icon?: string } }>('/api/courses', async (req) =>
+    coursesSvc.createCourse(req.body?.name ?? '', req.body?.color, req.body?.icon),
+  );
   app.get<{ Params: Params }>('/api/courses/:id', async (req) => coursesSvc.getCourseDetail(req.params.id));
-  app.patch<{ Params: Params; Body: { name?: string; color?: string } }>('/api/courses/:id', async (req) => coursesSvc.updateCourse(req.params.id, req.body ?? {}));
+  app.patch<{ Params: Params; Body: { name?: string; color?: string; icon?: string } }>('/api/courses/:id', async (req) => coursesSvc.updateCourse(req.params.id, req.body ?? {}));
   app.delete<{ Params: Params }>('/api/courses/:id', async (req) => {
     await coursesSvc.deleteCourse(req.params.id);
     return { ok: true };
@@ -84,6 +83,12 @@ export async function registerRoutes(app: FastifyInstance) {
     return coursesSvc.jobDto(job);
   });
 
+  app.get<{ Params: Params }>('/api/courses/:id/notions', async (req) => notionsSvc.getNotionMap(req.params.id));
+  app.post<{ Params: Params }>('/api/courses/:id/notions/generate', async (req) => notionsSvc.requestNotionMap(req.params.id));
+  app.get<{ Params: Params }>('/api/notions/:id', async (req) => notionsSvc.getNotionDetail(req.params.id));
+  app.post<{ Params: Params; Body: { refresh?: boolean } }>('/api/notions/:id/detail', async (req, reply) => {
+    await streamSse(reply, (onText) => notionsSvc.streamNotionDetail(req.params.id, Boolean(req.body?.refresh), onText));
+  });
   app.get<{ Params: Params }>('/api/courses/:id/chat', async (req) => {
     const t = chat.getOrCreateThread('course', req.params.id);
     return chat.getThread(t.id);
@@ -171,8 +176,8 @@ export async function registerRoutes(app: FastifyInstance) {
   app.post<{ Params: Params; Body: { what: 'location' | 'explanation' } }>('/api/sessions/:id/attempts/:attemptId/reveal', async (req) =>
     sessionsSvc.revealError(req.params.id, req.params.attemptId, req.body?.what === 'explanation' ? 'explanation' : 'location'),
   );
-  app.post<{ Params: Params; Body: { questionId: string; struggled?: boolean | null } }>('/api/sessions/:id/close-question', async (req) =>
-    sessionsSvc.closeQuestion(req.params.id, req.body.questionId, req.body.struggled),
+  app.post<{ Params: Params; Body: { questionId: string; struggled?: boolean | null; skip?: boolean } }>('/api/sessions/:id/close-question', async (req) =>
+    sessionsSvc.closeQuestion(req.params.id, req.body.questionId, req.body.struggled, { skip: Boolean(req.body.skip) }),
   );
   app.post<{ Params: Params }>('/api/sessions/:id/advance', async (req) => sessionsSvc.advance(req.params.id));
   app.post<{ Params: Params; Body: { questionId: string } }>('/api/sessions/:id/goto', async (req) => sessionsSvc.gotoQuestion(req.params.id, req.body.questionId));

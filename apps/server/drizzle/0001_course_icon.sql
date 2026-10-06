@@ -1,0 +1,1 @@
+ALTER TABLE `courses` ADD `icon` text DEFAULT 'graduation-cap' NOT NULL;

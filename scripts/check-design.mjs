@@ -25,6 +25,7 @@ const SPACING_PREFIXES = [
 const ALLOWED_ARBITRARY = [
   'max-w-[65ch]', // longueur de ligne 45–75 caractères
   'lg:h-[calc(100dvh-8rem)]', // panneau de réponse collant : écran − barre du haut (48) − progression (64) − marge (16)
+  'h-[70dvh]', // carte des notions : hauteur relative à l'écran, pour voir l'arbre en grand
 ];
 
 /** Positions dérivées de la mise en page (somme de hauteurs du système), pas des choix d'espacement. */

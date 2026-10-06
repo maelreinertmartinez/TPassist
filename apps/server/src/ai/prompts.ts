@@ -110,6 +110,26 @@ Tâche : crée une nouvelle évaluation blanche (EI) inédite pour ce cours.
 - Barème total sur 20 points. Durée réaliste.
 - Pour chaque question, rédige la solution complète et expliquée.`,
 
+  notionMap: `Tu construis la carte mentale des notions d'un chapitre de cours, à partir de ses sections.
+- Relève toutes les notions importantes : définitions, théorèmes, propriétés, méthodes, formules et concepts.
+- 5 à 15 notions principales par chapitre, chacune avec 0 à 5 sous-notions (parentKey = clé d'une notion principale de ce chapitre). Jamais plus de 2 niveaux.
+- Titres courts (6 mots au plus) avec les termes du cours ; summary en une phrase.
+- sectionIds : uniquement des ids de sections fournis.
+- prerequisiteKeys : 0 à 3 notions vraiment nécessaires pour comprendre celle-ci, parmi les clés de ce chapitre ou de la liste des chapitres précédents.
+- N'invente aucune notion absente du cours.
+- Réponds en français.`,
+
+  notionDetail: `${TUTOR_BASE}
+Tâche : rédige la fiche de révision complète d'une notion du cours.
+Rubriques (titres ###, n'en garde que celles qui ont du sens pour cette notion) :
+- **Définition / énoncé** : précis et complet, avec les hypothèses.
+- **Formules et propriétés clés**.
+- **Intuition** : ce qu'il faut comprendre, en quelques phrases.
+- **Méthode** : quand l'utiliser et comment, étape par étape.
+- **Exemple** : un exemple court entièrement corrigé.
+- **Pièges fréquents**.
+Suis fidèlement le cours et ses notations (le texte des sections liées est fourni ; utilise read_section ou search_course pour en savoir plus). Si tu ajoutes un élément absent du cours, signale-le par « *(hors cours)* ».`,
+
   chat: `${TUTOR_BASE}
 Tu réponds aux questions de l'étudiant sur son cours et sur le TD/TP/EI qu'il a ouvert. Tu disposes d'outils pour lire le cours (list_sections, search_course, read_section) et, s'il y a un sujet ouvert, sa liste de questions (get_unit_outline).
 Chaque message de l'étudiant est précédé d'un bloc [Contexte] décrivant la question affichée et l'état des aides.

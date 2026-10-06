@@ -5,7 +5,14 @@ Toute l'application tourne dans **un seul conteneur Docker** et n'est accessible
 
 ## Fonctionnalités
 
-- **Dashboard de cours** en tuiles.
+- **Dashboard de cours** en tuiles ; chaque cours a ses onglets dans l'ordre du parcours :
+  Cours · Notions · TD & TP · EI · Points bloquants · Historique · Documents.
+  Un TD/TP/EI déjà fait affiche **Bilan** (dernière séance) et **Recommencer**.
+- **Carte des notions** (onglet Notions), générée sur demande : carte mentale zoomable chapitres → notions → sous-notions
+  (définitions, théorèmes, méthodes, formules), avec recherche, vue liste et mode plein écran. Un clic sur une notion ouvre sa **fiche complète**
+  rédigée par l'IA au premier clic puis gardée (définition, formules, intuition, méthode, exemple, pièges), ses prérequis
+  (tracés sur la carte), les notions qui l'utilisent et les extraits du cours d'origine. Un bandeau propose de régénérer
+  la carte quand les chapitres ont changé.
 - **Import de PDF** (cours, TD, TP, EI, corrigés) : l'IA classe chaque page, découpe le document en parties
   (un même PDF peut mélanger cours et TD/TP), transcrit les énoncés question par question (Markdown + LaTeX)
   et rattache automatiquement les **corrigés officiels** à leur sujet quand il y en a.
@@ -15,8 +22,8 @@ Toute l'application tourne dans **un seul conteneur Docker** et n'est accessible
   - **verrous temporels** (en temps actif sur la question) : indice 2 min après la partie de cours, solution 2 min après l'indice ;
   - à droite, ta réponse en **texte/LaTeX** (aperçu en direct), **code** ou **photo de copie** ;
   - si c'est faux, seul « Faux » s'affiche, puis « Montrer où est l'erreur » (2 min) → « Expliquer l'erreur » (2 min) → « Donner la solution » (2 min) ;
-  - la **solution expliquée** est toujours montrée avant de passer à la suite ;
-  - passer sans répondre → « As-tu galéré ? ».
+  - après une bonne réponse, la **solution expliquée** est montrée avant de continuer ;
+  - « Passer la question » enchaîne directement sur la suivante (sans réponse : « As-tu galéré ? » d’abord) ; la solution reste dans le bilan.
 - **Chat « Poser une question »** à tout moment (cours ou sujet ouvert) ; il respecte les verrous.
 - **Bilan de fin** (exportable en PDF) : chaque question, toutes tes réponses, les erreurs expliquées, la solution, tes points forts et tes **points bloquants**.
 - **Quiz de révision facultatif** proposé en fin de séance, ciblé sur ce qui t'a posé problème.
@@ -63,7 +70,7 @@ Pour essayer l'interface sans consommer d'IA : `TPASSIST_AI_MOCK=1` dans `.env` 
 | `TPASSIST_AI_MOCK` | `0` | `1` = mode simulation |
 | `TPASSIST_PORT` | `3000` | Port local |
 
-La consommation estimée (en $) est affichée en bas du dashboard.
+Un clic sur l’état de l’IA (en haut à droite) ouvre la page **Statistiques**, qui permet aussi de revérifier la connexion et détaille la consommation : coût estimé, appels, jetons, durée, répartition par jour, par usage, par tâche et par modèle, et les dernières erreurs.
 
 ## Données et sauvegarde
 

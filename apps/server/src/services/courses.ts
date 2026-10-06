@@ -1,11 +1,11 @@
 import { and, asc, desc, eq, inArray } from 'drizzle-orm';
 import { rm, writeFile, mkdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { isAbsolute, join, relative } from 'node:path';
 import type { CourseDetail, CourseSummary, DocumentDto, JobDto, ReportDto, SectionDto, UnitDto } from '@tpassist/shared';
 import { config } from '../config';
 import { db, newId } from '../db/client';
 import { deleteUnits, HttpError, notFound } from '../db/repo';
-import { courseSections, courses, documents, jobs, questions, reports, sessionQuestions, sessions, units, weakPoints } from '../db/schema';
+import { attempts, chatMessages, chatThreads, courseSections, courses, documents, jobs, notions, questions, reports, sessionQuestions, sessions, units, weakPoints } from '../db/schema';
 import { enqueueJob } from '../jobs/queue';
 import { listQuizzes } from './quiz';
 import { listSessions } from './sessions';
@@ -33,6 +33,7 @@ export function listCourses(): CourseSummary[] {
       id: c.id,
       name: c.name,
       color: c.color,
+      icon: c.icon,
       createdAt: c.createdAt,
       counts: { cours: count('cours'), td: count('td'), tp: count('tp'), ei: count('ei') },
       inProgressSessions: inProgress,
@@ -41,35 +42,63 @@ export function listCourses(): CourseSummary[] {
   });
 }
 
-export function createCourse(name: string, color?: string) {
+/** Clé d'icône : identifiant court (le jeu d'icônes est défini côté front). */
+function checkIcon(icon: string): string {
+  if (!/^[a-z0-9-]{1,40}$/.test(icon)) throw new HttpError(400, 'Icône invalide.');
+  return icon;
+}
+
+export function createCourse(name: string, color?: string, icon?: string) {
   const n = name.trim();
   if (!n) throw new HttpError(400, 'Le nom du cours est obligatoire.');
   const count = db.select({ id: courses.id }).from(courses).all().length;
   return db
     .insert(courses)
-    .values({ id: newId(), name: n, color: color || PALETTE[count % PALETTE.length] })
+    .values({ id: newId(), name: n, color: color || PALETTE[count % PALETTE.length], ...(icon ? { icon: checkIcon(icon) } : {}) })
     .returning()
     .get();
 }
 
-export function updateCourse(id: string, patch: { name?: string; color?: string }) {
+export function updateCourse(id: string, patch: { name?: string; color?: string; icon?: string }) {
   const set: Partial<typeof courses.$inferInsert> = { updatedAt: Date.now() };
   if (patch.name !== undefined) {
     if (!patch.name.trim()) throw new HttpError(400, 'Le nom du cours est obligatoire.');
     set.name = patch.name.trim();
   }
   if (patch.color) set.color = patch.color;
+  if (patch.icon) set.icon = checkIcon(patch.icon);
   const row = db.update(courses).set(set).where(eq(courses.id, id)).returning().get();
   return row ?? notFound('Cours');
 }
 
+/** Supprime un cours, tout ce qui en dépend en base et ses fichiers (PDF, pages rendues, photos de réponses et du chat). */
 export async function deleteCourse(id: string) {
+  db.select({ id: courses.id }).from(courses).where(eq(courses.id, id)).get() ?? notFound('Cours');
   const unitIds = db.select({ id: units.id }).from(units).where(eq(units.courseId, id)).all().map((u) => u.id);
   const docIds = db.select({ id: documents.id }).from(documents).where(eq(documents.courseId, id)).all().map((d) => d.id);
+  const sessionIds = db.select({ id: sessions.id }).from(sessions).where(eq(sessions.courseId, id)).all().map((s) => s.id);
+  const photos = [
+    ...(sessionIds.length ? db.select({ path: attempts.imagePath }).from(attempts).where(inArray(attempts.sessionId, sessionIds)).all() : []),
+    ...db
+      .select({ path: chatMessages.imagePath })
+      .from(chatMessages)
+      .innerJoin(chatThreads, eq(chatThreads.id, chatMessages.threadId))
+      .where(eq(chatThreads.courseId, id))
+      .all(),
+  ]
+    .map((r) => r.path)
+    .filter((p): p is string => Boolean(p));
   deleteUnits(unitIds);
   db.delete(courses).where(eq(courses.id, id)).run();
+  // Les tâches pas encore lancées n'ont plus d'objet (une tâche déjà en cours échouera sans conséquence).
+  db.delete(jobs).where(and(eq(jobs.courseId, id), eq(jobs.status, 'queued'))).run();
   await rm(join(config.filesDir, id), { recursive: true, force: true });
   for (const d of docIds) await rm(join(config.pagesDir, d), { recursive: true, force: true });
+  for (const p of photos) {
+    // Par prudence, on ne supprime que dans le dossier des photos.
+    const inside = relative(config.answersDir, p);
+    if (inside && !inside.startsWith('..') && !isAbsolute(inside)) await rm(p, { force: true });
+  }
 }
 
 export function documentDto(d: typeof documents.$inferSelect): DocumentDto {
@@ -158,7 +187,7 @@ export function recentJobs(courseId: string): JobDto[] {
 export function getCourseDetail(id: string): CourseDetail {
   const c = db.select().from(courses).where(eq(courses.id, id)).get() ?? notFound('Cours');
   return {
-    course: { id: c.id, name: c.name, color: c.color, createdAt: c.createdAt },
+    course: { id: c.id, name: c.name, color: c.color, icon: c.icon, createdAt: c.createdAt },
     documents: db.select().from(documents).where(eq(documents.courseId, id)).orderBy(asc(documents.createdAt)).all().map(documentDto),
     units: unitDtos(id),
     sections: sectionDtos(id),
@@ -166,6 +195,7 @@ export function getCourseDetail(id: string): CourseDetail {
     sessions: listSessions(id),
     quizzes: listQuizzes(id),
     weakPoints: listWeakPoints(id),
+    notionCount: db.select({ id: notions.id }).from(notions).where(eq(notions.courseId, id)).all().length,
   };
 }
 

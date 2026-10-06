@@ -332,3 +332,47 @@ mark.error-mark {
     break-inside: avoid;
   }
 }
+
+/* Carte des notions (React Flow) : habillée avec les jetons du thème, qui suivent déjà le mode sombre. */
+.notion-map {
+  --xy-background-color: transparent;
+  --xy-edge-stroke: var(--color-line-strong);
+}
+.notion-map .react-flow__handle {
+  width: 1px;
+  height: 1px;
+  min-width: 0;
+  min-height: 0;
+  border: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+.notion-map .react-flow__node {
+  cursor: default;
+}
+.notion-map .react-flow__controls {
+  overflow: hidden;
+  border-radius: 8px;
+  box-shadow: var(--shadow-e2);
+}
+.notion-map .react-flow__controls-button {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid var(--color-line);
+  background: var(--color-raised);
+  color: var(--color-ink-2);
+}
+.notion-map .react-flow__controls-button:last-child {
+  border-bottom: 0;
+}
+.notion-map .react-flow__controls-button:hover {
+  background: var(--color-hover);
+  color: var(--color-ink);
+}
+.notion-map .react-flow__controls-button svg {
+  max-width: 12px;
+  max-height: 12px;
+  fill: currentColor;
+}

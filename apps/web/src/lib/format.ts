@@ -22,6 +22,38 @@ export function formatMinutes(ms: number): string {
   return m < 1 ? '< 1 min' : `${m} min`;
 }
 
+const usd2 = new Intl.NumberFormat('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const compact = new Intl.NumberFormat('fr-FR', { notation: 'compact', maximumFractionDigits: 1 });
+const integer = new Intl.NumberFormat('fr-FR');
+
+/** Coût en dollars : « 4,64 $ », « < 0,01 $ » pour un montant non nul minuscule. */
+export function formatUsd(n: number): string {
+  if (n > 0 && n < 0.005) return '< 0,01 $';
+  return `${usd2.format(n)} $`;
+}
+
+/** Grand nombre compact : 1 284 → « 1,3 k », 2 400 000 → « 2,4 M ». */
+export function formatCompact(n: number): string {
+  return n < 1000 ? integer.format(n) : compact.format(n);
+}
+
+export function formatInt(n: number): string {
+  return integer.format(n);
+}
+
+/** Durée lisible d'un appel : « 850 ms », « 12 s », « 1 min 05 s ». */
+export function formatSpan(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)} ms`;
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s} s`;
+  return `${Math.floor(s / 60)} min ${String(s % 60).padStart(2, '0')} s`;
+}
+
+/** Clé de jour local AAAA-MM-JJ. */
+export function localDayKey(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
 /** Réduit une image (photo de copie) et renvoie une data URL JPEG. */
 export async function imageFileToDataUrl(file: Blob, maxSide = 2000, quality = 0.85): Promise<string> {
   const url = URL.createObjectURL(file);

@@ -11,7 +11,7 @@ export type Verdict = 'correct' | 'incorrect' | 'partiel' | 'pending';
 export type HelpKind = 'reformulation' | 'course_refs' | 'hint' | 'solution';
 export type EventKind = HelpKind | 'error_location' | 'error_explanation';
 export type AnswerType = 'text' | 'code' | 'image';
-export type JobType = 'ingest' | 'link_corrections' | 'report' | 'quiz' | 'generate_ei';
+export type JobType = 'ingest' | 'link_corrections' | 'report' | 'quiz' | 'generate_ei' | 'notions';
 export type JobStatus = 'queued' | 'running' | 'done' | 'error';
 export type QuizKind = 'tp_review' | 'course_full';
 export type QuizItemType = 'mcq' | 'open';
@@ -61,6 +61,7 @@ export interface CourseSummary {
   id: string;
   name: string;
   color: string;
+  icon: string;
   createdAt: number;
   counts: { cours: number; td: number; tp: number; ei: number };
   inProgressSessions: number;
@@ -175,7 +176,7 @@ export interface WeakPointDto {
 }
 
 export interface CourseDetail {
-  course: { id: string; name: string; color: string; createdAt: number };
+  course: { id: string; name: string; color: string; icon: string; createdAt: number };
   documents: DocumentDto[];
   units: UnitDto[];
   sections: SectionDto[];
@@ -183,6 +184,53 @@ export interface CourseDetail {
   sessions: SessionSummary[];
   quizzes: QuizSummary[];
   weakPoints: WeakPointDto[];
+  /** Nombre de notions de la carte du cours (0 tant qu'elle n'a pas été générée). */
+  notionCount: number;
+}
+
+// ---------- Carte des notions ----------
+
+export type NotionKind = 'concept' | 'definition' | 'theoreme' | 'propriete' | 'methode' | 'formule';
+
+export const NOTION_KIND_LABELS: Record<NotionKind, string> = {
+  concept: 'Notion',
+  definition: 'Définition',
+  theoreme: 'Théorème',
+  propriete: 'Propriété',
+  methode: 'Méthode',
+  formule: 'Formule',
+};
+
+export interface NotionDto {
+  id: string;
+  /** Chapitre (unité de cours) auquel la notion appartient. */
+  unitId: string;
+  /** Notion principale dont elle est une sous-notion (un seul niveau). */
+  parentId: string | null;
+  order: number;
+  title: string;
+  summary: string;
+  kind: NotionKind;
+  sectionIds: string[];
+  prerequisiteIds: string[];
+  /** Points bloquants actifs liés à cette notion. */
+  weakPointIds: string[];
+  hasDetail: boolean;
+}
+
+export interface NotionMapDto {
+  notions: NotionDto[];
+  /** Dernière génération demandée (en cours, terminée ou en échec). */
+  job: JobDto | null;
+  /** Les chapitres ont changé depuis la génération de la carte. */
+  stale: boolean;
+  generatedAt: number | null;
+}
+
+export interface NotionDetailDto {
+  id: string;
+  detailMd: string | null;
+  sections: { id: string; title: string; unitTitle: string; pageStart: number | null; pageEnd: number | null; contentMd: string }[];
 }
 
 // ---------- Éditeur de structure ----------
@@ -465,8 +513,89 @@ export interface AiHealth {
   checkedAt: number;
 }
 
-export interface UsageSummary {
+// ---------- Statistiques d'utilisation de l'IA ----------
+
+export interface UsageTotals {
   calls: number;
+  errors: number;
   costUsd: number;
-  byTask: { task: string; calls: number; costUsd: number }[];
+  inputTokens: number;
+  outputTokens: number;
+  durationMs: number;
+}
+
+export interface UsageDay extends Omit<UsageTotals, 'durationMs'> {
+  /** Jour local au format AAAA-MM-JJ. */
+  day: string;
+}
+
+export interface UsageTask extends UsageTotals {
+  task: string;
+}
+
+export interface AiUsageStats {
+  /** Début de la période (ms) ; 0 = depuis toujours. */
+  from: number;
+  totals: UsageTotals;
+  allTime: { calls: number; costUsd: number; firstCallAt: number | null };
+  byDay: UsageDay[];
+  byTask: UsageTask[];
+  byModel: { model: string; calls: number; costUsd: number }[];
+  recentErrors: { id: string; task: string; model: string; error: string; createdAt: number }[];
+}
+
+export type UsageCategory = 'ingest' | 'help' | 'verify' | 'chat' | 'report' | 'quiz' | 'ei' | 'notions' | 'other';
+
+export const USAGE_CATEGORY_LABELS: Record<UsageCategory, string> = {
+  ingest: 'Analyse des PDF',
+  help: 'Aides (cours, indication, solution…)',
+  verify: 'Vérification des réponses',
+  chat: 'Chat',
+  report: 'Bilans de séance',
+  quiz: 'Quiz',
+  ei: 'EI blanches générées',
+  notions: 'Carte et fiches des notions',
+  other: 'Tests de connexion et divers',
+};
+
+const TASK_LABELS: Record<string, string> = {
+  'ingest.segment': 'Découpage des PDF en parties',
+  'ingest.cours': 'Transcription des chapitres de cours',
+  'ingest.td': 'Extraction des TD',
+  'ingest.tp': 'Extraction des TP',
+  'ingest.ei': 'Extraction des EI',
+  'ingest.corrige': 'Extraction des corrigés',
+  'ingest.link_corrections': 'Rattachement des corrigés',
+  'tutor.reformulation': 'Reformulation d’énoncé',
+  'tutor.course_refs': 'Recherche de la partie de cours',
+  'tutor.hint': 'Indication',
+  'tutor.solution': 'Solution expliquée',
+  'tutor.verify': 'Vérification d’une réponse',
+  chat: 'Question au chat',
+  'report.exercise': 'Bilan d’un exercice',
+  'report.summary': 'Synthèse et points bloquants',
+  'quiz.tp_review': 'Génération de quiz de révision',
+  'quiz.course_full': 'Génération de quiz complet',
+  'quiz.grade_open': 'Correction de question ouverte',
+  'ei.generate': 'Génération d’EI blanche',
+  'notions.map': 'Carte des notions',
+  'notions.detail': 'Fiche d’une notion',
+  health: 'Test de connexion',
+};
+
+export function taskLabel(task: string): string {
+  return TASK_LABELS[task] ?? task;
+}
+
+export function taskCategory(task: string): UsageCategory {
+  if (task.startsWith('ingest.')) return 'ingest';
+  if (task === 'tutor.verify') return 'verify';
+  if (task.startsWith('tutor.')) return 'help';
+  if (task === 'chat') return 'chat';
+  if (task.startsWith('report.')) return 'report';
+  if (task === 'quiz.grade_open') return 'verify';
+  if (task.startsWith('quiz.')) return 'quiz';
+  if (task.startsWith('ei.')) return 'ei';
+  if (task.startsWith('notions.')) return 'notions';
+  return 'other';
 }

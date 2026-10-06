@@ -481,14 +481,19 @@ export function revealError(id: string, attemptId: string, what: 'location' | 'e
 
 // ---------- Navigation ----------
 
-/** Termine la question en cours (passage à la suite) ; la solution sera affichée en transition. */
-export function closeQuestion(id: string, questionId: string, struggled?: boolean | null) {
+/**
+ * Termine la question en cours.
+ * - Après une bonne réponse : la solution expliquée est affichée en transition avant de continuer.
+ * - `skip` (« Passer la question ») : on enchaîne directement sur la question suivante, sans solution ;
+ *   elle reste consultable dans le bilan.
+ */
+export function closeQuestion(id: string, questionId: string, struggled?: boolean | null, opts: { skip?: boolean } = {}) {
   const s = loadSession(id);
   requireActive(s);
   requireCurrent(s, questionId);
   if (s.mode === 'ei_examen') throw new HttpError(400, 'Utilise « Question suivante » en mode examen.');
   const sq = loadSq(id, questionId);
-  if (sq.closed) return getSessionState(id);
+  if (sq.closed) return opts.skip ? advance(id) : getSessionState(id);
   const list = attemptsFor(id, questionId);
   const flags = { ...sq.flags };
   let status = sq.status;
@@ -501,7 +506,7 @@ export function closeQuestion(id: string, questionId: string, struggled?: boolea
   }
   updateSq(id, questionId, { closed: true, solutionUnlocked: true, status, flags, lastHeartbeatAt: null });
   touchSession(id);
-  return getSessionState(id);
+  return opts.skip ? advance(id) : getSessionState(id);
 }
 
 /** Passe à la question suivante (ou termine la session). */

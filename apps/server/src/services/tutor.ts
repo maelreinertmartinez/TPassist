@@ -28,7 +28,8 @@ export function setCache(questionId: string, kind: CacheKind, contentMd: string,
 }
 
 const inflight = new Map<string, Promise<unknown>>();
-function dedupe<T>(key: string, fn: () => Promise<T>): Promise<T> {
+/** Une seule génération à la fois par clé : les appels simultanés partagent le même résultat. */
+export function dedupe<T>(key: string, fn: () => Promise<T>): Promise<T> {
   const cur = inflight.get(key) as Promise<T> | undefined;
   if (cur) return cur;
   const p = fn().finally(() => inflight.delete(key));

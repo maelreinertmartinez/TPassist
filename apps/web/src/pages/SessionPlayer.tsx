@@ -155,10 +155,12 @@ export function SessionPlayer() {
   });
 
   const close = useMutation({
-    mutationFn: (struggled?: boolean) => api.post<SessionState>(`/api/sessions/${sessionId}/close-question`, { questionId, struggled }),
-    onSuccess: (st) => {
+    mutationFn: (v: { struggled?: boolean; skip?: boolean }) =>
+      api.post<SessionState>(`/api/sessions/${sessionId}/close-question`, { questionId, struggled: v.struggled, skip: v.skip }),
+    onSuccess: (st, v) => {
       setStruggleOpen(false);
       setState(st);
+      if (v.skip) window.scrollTo({ top: 0 });
     },
     onError: (e) => {
       if (e instanceof ApiError && e.code === 'struggle_required') setStruggleOpen(true);
@@ -186,7 +188,7 @@ export function SessionPlayer() {
   const onSkip = () => {
     if (!current) return;
     if (current.attempts.length === 0) setStruggleOpen(true);
-    else close.mutate(undefined);
+    else close.mutate({ skip: true });
   };
 
   const onFinishExam = async () => {
@@ -391,7 +393,7 @@ export function SessionPlayer() {
                   {lastAttempt && <AnswerReadOnly attempt={lastAttempt} />}
                 </PanelBody>
                 <PanelFooter>
-                  <Button variant="primary" size="lg" className="w-full" icon={<ArrowRight className="size-4" />} loading={close.isPending} onClick={() => close.mutate(undefined)}>
+                  <Button variant="primary" size="lg" className="w-full" icon={<ArrowRight className="size-4" />} loading={close.isPending} onClick={() => close.mutate({})}>
                     Question suivante
                   </Button>
                 </PanelFooter>
@@ -439,16 +441,16 @@ export function SessionPlayer() {
             <Button variant="tertiary" onClick={() => setStruggleOpen(false)}>
               Rester sur la question
             </Button>
-            <Button onClick={() => close.mutate(false)} loading={close.isPending && close.variables === false}>
+            <Button onClick={() => close.mutate({ struggled: false, skip: true })} loading={close.isPending && close.variables?.struggled === false}>
               Non, ça allait
             </Button>
-            <Button variant="primary" onClick={() => close.mutate(true)} loading={close.isPending && close.variables === true}>
+            <Button variant="primary" onClick={() => close.mutate({ struggled: true, skip: true })} loading={close.isPending && close.variables?.struggled === true}>
               Oui, j’ai galéré
             </Button>
           </>
         }
       >
-        <p className="text-sm text-ink-2">Tu passes sans avoir proposé de réponse. Ta réponse sert à cibler le quiz de révision et tes points bloquants ; la solution expliquée s’affichera ensuite.</p>
+        <p className="text-sm text-ink-2">Tu passes sans avoir proposé de réponse. Ta réponse sert à cibler le quiz de révision et tes points bloquants. La solution de cette question sera dans ton bilan de fin.</p>
       </Modal>
 
       {!isExam && (

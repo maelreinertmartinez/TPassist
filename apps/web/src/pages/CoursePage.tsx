@@ -9,21 +9,22 @@ import {
   FileText,
   FileUp,
   FlaskConical,
-  GraduationCap,
   ListChecks,
   MessageCircleQuestion,
   Pencil,
   Play,
   RefreshCw,
+  RotateCcw,
   ScrollText,
   Sparkles,
   Timer,
   Trash2,
 } from 'lucide-react';
-import { useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { ChatPanel } from '../components/ChatPanel';
 import { JobList } from '../components/JobList';
+import { NotionsTab } from '../components/NotionsTab';
 import { UploadDialog } from '../components/UploadDialog';
 import { WeakPointsPanel } from '../components/WeakPointsPanel';
 import {
@@ -46,6 +47,8 @@ import {
 import { api } from '../lib/api';
 import { useBreadcrumbs } from '../lib/breadcrumbs';
 import { formatDate } from '../lib/format';
+import { CourseIconTile, IconPicker } from '../lib/courseIcons';
+import { useDeleteCourse } from '../lib/useDeleteCourse';
 import { ColorPicker } from './Dashboard';
 
 const KIND_ICON: Record<UnitKind, ReactNode> = {
@@ -56,7 +59,7 @@ const KIND_ICON: Record<UnitKind, ReactNode> = {
   corrige: <CheckCircle2 className="size-4" />,
 };
 
-type Tab = 'exercices' | 'ei' | 'cours' | 'historique' | 'points' | 'documents';
+type Tab = 'cours' | 'notions' | 'exercices' | 'ei' | 'points' | 'historique' | 'documents';
 
 export function CoursePage() {
   const { courseId } = useParams<{ courseId: string }>();
@@ -86,6 +89,7 @@ export function CoursePage() {
   const [eiGenOpen, setEiGenOpen] = useState(false);
   const [launchEi, setLaunchEi] = useState<UnitDto | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const deleteCourse = useDeleteCourse();
 
   const startSession = useMutation({
     mutationFn: (v: { unitId: string; mode: SessionMode; timeLimitMinutes?: number }) => api.post<{ id: string }>(`/api/units/${v.unitId}/sessions`, v),
@@ -108,12 +112,14 @@ export function CoursePage() {
   const resume = inProgress[0];
   const hasContent = d.units.length > 0;
   const historyCount = d.sessions.length + d.quizzes.length;
+  // Ordre du parcours : apprendre → pratiquer → s'évaluer → revoir → sources.
   const tabs: { value: Tab; label: ReactNode; hidden?: boolean }[] = [
+    { value: 'cours', label: <>Cours <Count n={byKind.cours.length} /></>, hidden: byKind.cours.length === 0 },
+    { value: 'notions', label: <>Notions {d.notionCount > 0 && <Count n={d.notionCount} />}</>, hidden: byKind.cours.length === 0 && d.notionCount === 0 },
     { value: 'exercices', label: <>TD & TP <Count n={exercises.length} /></>, hidden: exercises.length === 0 && byKind.corrige.length === 0 },
     { value: 'ei', label: <>EI <Count n={byKind.ei.length} /></>, hidden: byKind.ei.length === 0 },
-    { value: 'cours', label: <>Cours <Count n={byKind.cours.length} /></>, hidden: byKind.cours.length === 0 },
-    { value: 'historique', label: <>Historique <Count n={historyCount} /></>, hidden: historyCount === 0 },
     { value: 'points', label: <>Points bloquants <Count n={d.weakPoints.filter((w) => w.status === 'active').length} /></> },
+    { value: 'historique', label: <>Historique <Count n={historyCount} /></>, hidden: historyCount === 0 },
     { value: 'documents', label: <>Documents <Count n={d.documents.length} /></> },
   ];
   const visibleTabs = tabs.filter((t) => !t.hidden);
@@ -124,26 +130,43 @@ export function CoursePage() {
   return (
     <Page>
       {/* En-tête façon page Notion */}
-      <header className="group mb-8">
-        <span className="mb-4 grid size-12 place-items-center rounded-lg text-white shadow-e1" style={{ background: d.course.color }}>
-          <GraduationCap className="size-6" />
-        </span>
-        <div className="flex items-start gap-2">
-          <h1 className="text-3xl leading-tight font-semibold tracking-tight">{d.course.name}</h1>
-          <IconButton label="Modifier le cours" onClick={() => setSettingsOpen(true)} className="mt-1">
-            <Pencil className="size-4" />
-          </IconButton>
+      <header className="mb-8">
+        <div className="flex items-center gap-4">
+          <button
+            type="button"
+            onClick={() => setSettingsOpen(true)}
+            title="Changer l’icône et la couleur"
+            aria-label="Changer l’icône et la couleur du cours"
+            className="shrink-0 rounded-lg transition-shadow hover:shadow-e2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          >
+            <CourseIconTile icon={d.course.icon} color={d.course.color} size="lg" />
+          </button>
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <h1 className="text-3xl leading-tight font-semibold tracking-tight">{d.course.name}</h1>
+              <IconButton label="Modifier le cours" onClick={() => setSettingsOpen(true)}>
+                <Pencil className="size-4" />
+              </IconButton>
+              <IconButton
+                label="Supprimer le cours"
+                disabled={deleteCourse.deletingId === d.course.id}
+                onClick={() => deleteCourse.ask(d.course, () => navigate('/'))}
+              >
+                <Trash2 className="size-4" />
+              </IconButton>
+            </div>
+            <p className="mt-1 text-sm text-ink-3">
+              {[
+                byKind.cours.length && `${byKind.cours.length} chapitre${byKind.cours.length > 1 ? 's' : ''}`,
+                exercises.length && `${exercises.length} TD/TP`,
+                byKind.ei.length && `${byKind.ei.length} EI`,
+                `${d.documents.length} document${d.documents.length > 1 ? 's' : ''}`,
+              ]
+                .filter(Boolean)
+                .join(' · ')}
+            </p>
+          </div>
         </div>
-        <p className="mt-2 text-sm text-ink-3">
-          {[
-            byKind.cours.length && `${byKind.cours.length} chapitre${byKind.cours.length > 1 ? 's' : ''}`,
-            exercises.length && `${exercises.length} TD/TP`,
-            byKind.ei.length && `${byKind.ei.length} EI`,
-            `${d.documents.length} document${d.documents.length > 1 ? 's' : ''}`,
-          ]
-            .filter(Boolean)
-            .join(' · ')}
-        </p>
         <div className="mt-6 flex flex-wrap items-center gap-2">
           <Button icon={<FileUp className="size-4" />} onClick={() => setUploadOpen(true)}>
             Ajouter des fichiers
@@ -186,7 +209,8 @@ export function CoursePage() {
             </p>
           </Callout>
         )}
-        <JobList jobs={d.jobs.filter((j) => j.type !== 'report' && j.type !== 'quiz')} documentsById={docNames} onChange={refresh} />
+        <ErrorBox error={deleteCourse.error} />
+        <JobList jobs={d.jobs.filter((j) => j.type !== 'report' && j.type !== 'quiz' && j.type !== 'notions')} documentsById={docNames} onChange={refresh} />
         <ErrorBox error={startSession.error} />
       </div>
 
@@ -208,7 +232,7 @@ export function CoursePage() {
           <div className="pt-4">
             {activeTab === 'exercices' && (
               <>
-                <UnitList units={exercises} sessions={inProgress} onLaunch={launch} launching={startSession.isPending ? startSession.variables?.unitId : undefined} />
+                <UnitList units={exercises} sessions={d.sessions} onLaunch={launch} launching={startSession.isPending ? startSession.variables?.unitId : undefined} />
                 {byKind.corrige.length > 0 && (
                   <Toggle className="mt-6" summary={<span className="text-ink-3">Corrigés détectés ({byKind.corrige.length})</span>}>
                     <ul className="space-y-1">
@@ -235,9 +259,10 @@ export function CoursePage() {
               </>
             )}
             {activeTab === 'ei' && (
-              <UnitList units={byKind.ei} sessions={inProgress} onLaunch={launch} launching={startSession.isPending ? startSession.variables?.unitId : undefined} />
+              <UnitList units={byKind.ei} sessions={d.sessions} onLaunch={launch} launching={startSession.isPending ? startSession.variables?.unitId : undefined} />
             )}
-            {activeTab === 'cours' && <CoursList units={byKind.cours} detail={d} />}
+            {activeTab === 'cours' && <CoursList units={byKind.cours} detail={d} onChange={refresh} />}
+            {activeTab === 'notions' && <NotionsTab detail={d} />}
             {activeTab === 'historique' && <History detail={d} />}
             {activeTab === 'points' && <WeakPointsPanel points={d.weakPoints} onChange={refresh} />}
             {activeTab === 'documents' && <Documents detail={d} onChange={refresh} onAdd={() => setUploadOpen(true)} />}
@@ -274,37 +299,42 @@ function Row({ icon, title, meta, actions, to }: { icon: ReactNode; title: React
     <>
       <span className="flex h-6 shrink-0 items-center text-ink-4">{icon}</span>
       <div className="min-w-0 flex-1">
-        <p className="truncate text-sm">{title}</p>
+        <p className="truncate text-sm leading-6">{title}</p>
         {meta && <div className="mt-1 text-xs text-ink-3">{meta}</div>}
       </div>
     </>
   );
+  // Sur un écran étroit, les actions passent sous le titre plutôt que de l'écraser.
+  const main = 'flex min-w-0 flex-1 basis-64 items-start gap-3';
   return (
-    <li className="flex items-start gap-3 rounded px-2 py-2 transition-colors hover:bg-hover">
+    <li className="flex flex-wrap items-start gap-x-3 gap-y-2 rounded px-2 py-2 transition-colors hover:bg-hover">
       {to ? (
-        <Link to={to} className="flex min-w-0 flex-1 items-start gap-3">
+        <Link to={to} className={main}>
           {body}
         </Link>
       ) : (
-        body
+        <div className={main}>{body}</div>
       )}
-      {actions && <div className="flex shrink-0 items-center gap-1">{actions}</div>}
+      {actions && <div className="ml-auto flex shrink-0 items-center gap-1">{actions}</div>}
     </li>
   );
 }
 
+/** `sessions` : toutes les séances du cours, de la plus récente à la plus ancienne. */
 function UnitList({ units, sessions, onLaunch, launching }: { units: UnitDto[]; sessions: CourseDetail['sessions']; onLaunch: (u: UnitDto) => void; launching?: string }) {
   const navigate = useNavigate();
   if (units.length === 0) return <p className="px-2 text-sm text-ink-3">Rien ici pour l’instant.</p>;
   return (
     <ul className="space-y-1">
       {units.map((u) => {
-        const running = sessions.find((s) => s.unitId === u.id);
+        const running = sessions.find((s) => s.unitId === u.id && s.status === 'in_progress');
+        const last = sessions.find((s) => s.unitId === u.id && s.status !== 'in_progress');
         const meta = [
           UNIT_KIND_LABELS[u.kind],
           `${u.questionCount} question${u.questionCount > 1 ? 's' : ''}`,
           u.documentName ? `${u.documentName}, p. ${u.pageStart}–${u.pageEnd}` : u.origin === 'generated' ? 'générée par l’IA' : null,
           u.kind === 'ei' && u.meta.durationMinutes ? `${u.meta.durationMinutes} min` : null,
+          last && (last.status === 'reporting' ? 'bilan en préparation' : `terminé le ${formatDate(last.updatedAt)}${last.score !== null ? ` · ${last.score}/20` : ''}`),
         ].filter(Boolean);
         return (
           <Row
@@ -331,13 +361,30 @@ function UnitList({ units, sessions, onLaunch, launching }: { units: UnitDto[]; 
                 <IconButton label="Modifier la structure" onClick={() => navigate(`/units/${u.id}/edit`)}>
                   <Pencil className="size-4" />
                 </IconButton>
+                {last && (
+                  <Button
+                    size="sm"
+                    variant="tertiary"
+                    icon={last.reportId && last.status === 'done' ? <ScrollText className="size-4" /> : undefined}
+                    loading={last.status === 'reporting' || !last.reportId}
+                    onClick={() => last.reportId && navigate(`/reports/${last.reportId}`)}
+                  >
+                    Bilan
+                  </Button>
+                )}
                 {running ? (
                   <Button size="sm" icon={<Play className="size-4" />} onClick={() => navigate(`/sessions/${running.id}`)}>
                     Reprendre
                   </Button>
                 ) : (
-                  <Button size="sm" icon={u.kind === 'ei' ? <Timer className="size-4" /> : <Play className="size-4" />} loading={launching === u.id} disabled={u.questionCount === 0} onClick={() => onLaunch(u)}>
-                    Lancer
+                  <Button
+                    size="sm"
+                    icon={last ? <RotateCcw className="size-4" /> : u.kind === 'ei' ? <Timer className="size-4" /> : <Play className="size-4" />}
+                    loading={launching === u.id}
+                    disabled={u.questionCount === 0}
+                    onClick={() => onLaunch(u)}
+                  >
+                    {last ? 'Recommencer' : 'Lancer'}
                   </Button>
                 )}
               </>
@@ -349,20 +396,56 @@ function UnitList({ units, sessions, onLaunch, launching }: { units: UnitDto[]; 
   );
 }
 
-function CoursList({ units, detail }: { units: UnitDto[]; detail: CourseDetail }) {
+function CoursList({ units, detail, onChange }: { units: UnitDto[]; detail: CourseDetail; onChange: () => void }) {
   const navigate = useNavigate();
+  const qc = useQueryClient();
+  const confirm = useConfirm();
+  const remove = useMutation({
+    mutationFn: (id: string) => api.del(`/api/units/${id}`),
+    onSuccess: () => {
+      onChange();
+      // La carte des notions perd les notions de ce chapitre (et signale qu'elle est à mettre à jour).
+      void qc.invalidateQueries({ queryKey: ['notions', detail.course.id] });
+    },
+  });
+  const ask = async (u: UnitDto, sectionCount: number) => {
+    const ok = await confirm({
+      title: `Supprimer « ${u.title} » ?`,
+      message: `${sectionCount === 0 ? 'Ce chapitre et ses notions seront supprimés.' : sectionCount === 1 ? 'Sa section et ses notions seront supprimées.' : `Ses ${sectionCount} sections et ses notions seront supprimées.`} Le PDF d’origine reste dans Documents : le réanalyser recréerait le chapitre.`,
+      confirmLabel: 'Supprimer le chapitre',
+      danger: true,
+    });
+    if (ok) remove.mutate(u.id);
+  };
   return (
     <div className="space-y-2">
+      <ErrorBox error={remove.error} />
       {units.map((u) => {
         const sections = detail.sections.filter((s) => s.unitId === u.id);
+        const deleting = remove.isPending && remove.variables === u.id;
         return (
           <Toggle
             key={u.id}
+            className={clsx(deleting && 'pointer-events-none opacity-50')}
             summary={
-              <span className="flex items-center justify-between gap-2">
+              <span className="group/row flex items-center justify-between gap-2">
                 <span className="truncate">{u.title}</span>
-                <span className="shrink-0 text-xs text-ink-3">
-                  {sections.length} section{sections.length > 1 ? 's' : ''}
+                <span className="flex shrink-0 items-center gap-2">
+                  <span className="text-xs text-ink-3">
+                    {sections.length} section{sections.length > 1 ? 's' : ''}
+                  </span>
+                  {/* Dans le résumé du bloc dépliable : le clic ne doit pas le déplier. */}
+                  <IconButton
+                    label={`Supprimer « ${u.title} »`}
+                    className="-my-1 transition-opacity sm:opacity-0 sm:group-hover/row:opacity-100 sm:focus-visible:opacity-100"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      void ask(u, sections.length);
+                    }}
+                  >
+                    <Trash2 className="size-4" />
+                  </IconButton>
                 </span>
               </span>
             }
@@ -383,9 +466,14 @@ function CoursList({ units, detail }: { units: UnitDto[]; detail: CourseDetail }
                   )}
                 </div>
               ))}
-              <Button size="sm" variant="tertiary" icon={<Pencil className="size-4" />} onClick={() => navigate(`/units/${u.id}/edit`)}>
-                Modifier ce chapitre
-              </Button>
+              <div className="flex flex-wrap gap-2">
+                <Button size="sm" variant="tertiary" icon={<Pencil className="size-4" />} onClick={() => navigate(`/units/${u.id}/edit`)}>
+                  Modifier ce chapitre
+                </Button>
+                <Button size="sm" variant="danger-quiet" icon={<Trash2 className="size-4" />} loading={deleting} onClick={() => ask(u, sections.length)}>
+                  Supprimer ce chapitre
+                </Button>
+              </div>
             </div>
           </Toggle>
         );
@@ -708,22 +796,22 @@ function LaunchEiModal({ unit, onClose, onLaunch, loading }: { unit: UnitDto | n
 function CourseSettingsModal({ detail, open, onClose }: { detail: CourseDetail; open: boolean; onClose: () => void }) {
   const qc = useQueryClient();
   const navigate = useNavigate();
-  const confirm = useConfirm();
+  const deleteCourse = useDeleteCourse();
   const [name, setName] = useState(detail.course.name);
   const [color, setColor] = useState(detail.course.color);
+  const [icon, setIcon] = useState(detail.course.icon);
+  useEffect(() => {
+    if (!open) return;
+    setName(detail.course.name);
+    setColor(detail.course.color);
+    setIcon(detail.course.icon);
+  }, [open]);
   const save = useMutation({
-    mutationFn: () => api.patch(`/api/courses/${detail.course.id}`, { name, color }),
+    mutationFn: () => api.patch(`/api/courses/${detail.course.id}`, { name, color, icon }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['course', detail.course.id] });
       qc.invalidateQueries({ queryKey: ['courses'] });
       onClose();
-    },
-  });
-  const remove = useMutation({
-    mutationFn: () => api.del(`/api/courses/${detail.course.id}`),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['courses'] });
-      navigate('/');
     },
   });
   return (
@@ -737,18 +825,8 @@ function CourseSettingsModal({ detail, open, onClose }: { detail: CourseDetail; 
             variant="danger-quiet"
             className="mr-auto"
             icon={<Trash2 className="size-4" />}
-            loading={remove.isPending}
-            onClick={async () => {
-              if (
-                await confirm({
-                  title: `Supprimer « ${detail.course.name} » ?`,
-                  message: 'Tous ses documents, séances, bilans, quiz et points bloquants seront supprimés définitivement.',
-                  confirmLabel: 'Supprimer le cours',
-                  danger: true,
-                })
-              )
-                remove.mutate();
-            }}
+            loading={deleteCourse.deletingId === detail.course.id}
+            onClick={() => deleteCourse.ask(detail.course, () => navigate('/'))}
           >
             Supprimer le cours
           </Button>
@@ -766,7 +844,8 @@ function CourseSettingsModal({ detail, open, onClose }: { detail: CourseDetail; 
           <TextInput value={name} onChange={(e) => setName(e.target.value)} />
         </Field>
         <ColorPicker value={color} onChange={setColor} />
-        <ErrorBox error={save.error ?? remove.error} />
+        <IconPicker value={icon} onChange={setIcon} color={color} />
+        <ErrorBox error={save.error ?? deleteCourse.error} />
       </div>
     </Modal>
   );

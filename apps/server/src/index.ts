@@ -14,6 +14,7 @@ import './jobs/linkCorrections';
 import './jobs/generateReport';
 import './jobs/generateQuiz';
 import './jobs/generateEi';
+import './jobs/generateNotions';
 
 ensureDataDirs();
 openDb();

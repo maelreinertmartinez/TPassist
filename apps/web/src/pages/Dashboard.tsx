@@ -1,12 +1,15 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { AiHealth, CourseSummary, UsageSummary } from '@tpassist/shared';
-import { AlertTriangle, BookOpen, Flame, Play, Plus } from 'lucide-react';
+import type { AiHealth, CourseSummary } from '@tpassist/shared';
+import clsx from 'clsx';
+import { AlertTriangle, BookOpen, Flame, Play, Plus, Trash2 } from 'lucide-react';
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Button, Callout, EmptyState, ErrorBox, Field, Modal, Spinner, TextInput } from '../components/ui';
+import { Button, Callout, EmptyState, ErrorBox, Field, IconButton, Modal, Spinner, TextInput } from '../components/ui';
 import { api } from '../lib/api';
 import { useBreadcrumbs } from '../lib/breadcrumbs';
 import { COURSE_COLORS } from '../lib/colors';
+import { CourseIconTile, IconPicker } from '../lib/courseIcons';
+import { useDeleteCourse } from '../lib/useDeleteCourse';
 
 function plural(n: number, one: string, many: string) {
   return `${n} ${n > 1 ? many : one}`;
@@ -28,13 +31,14 @@ export function Dashboard() {
   const navigate = useNavigate();
   const courses = useQuery({ queryKey: ['courses'], queryFn: () => api.get<CourseSummary[]>('/api/courses') });
   const health = useQuery({ queryKey: ['health-ai'], queryFn: () => api.get<AiHealth>('/api/health/ai'), staleTime: 10 * 60 * 1000 });
-  const usage = useQuery({ queryKey: ['usage'], queryFn: () => api.get<UsageSummary>('/api/usage') });
   const [open, setOpen] = useState(false);
   const [name, setName] = useState('');
   const [color, setColor] = useState(COURSE_COLORS[0]);
+  const [icon, setIcon] = useState('graduation-cap');
+  const deleteCourse = useDeleteCourse();
 
   const create = useMutation({
-    mutationFn: () => api.post<{ id: string }>('/api/courses', { name, color }),
+    mutationFn: () => api.post<{ id: string }>('/api/courses', { name, color, icon }),
     onSuccess: (c) => {
       qc.invalidateQueries({ queryKey: ['courses'] });
       setOpen(false);
@@ -65,6 +69,8 @@ export function Dashboard() {
         </Callout>
       )}
 
+      <ErrorBox error={deleteCourse.error} />
+
       {courses.isLoading ? (
         <Spinner label="Chargement…" />
       ) : courses.error ? (
@@ -84,45 +90,46 @@ export function Dashboard() {
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {courses.data?.map((c) => (
-            <Link
-              key={c.id}
-              to={`/courses/${c.id}`}
-              className="group block overflow-hidden rounded-lg bg-raised shadow-e1 transition-shadow hover:shadow-e2 focus-visible:outline-2 focus-visible:outline-accent"
-            >
-              <div className="h-1" style={{ background: c.color }} />
-              <div className="space-y-4 p-6">
-                <div className="flex items-start gap-3">
-                  <span className="grid size-8 shrink-0 place-items-center rounded text-white" style={{ background: c.color }}>
-                    <BookOpen className="size-4" />
-                  </span>
-                  <div className="min-w-0">
-                    <h2 className="text-lg leading-tight font-semibold">{c.name}</h2>
-                    <p className="mt-1 text-sm text-ink-3">{courseMeta(c)}</p>
+            <div key={c.id} className={clsx('group relative', deleteCourse.deletingId === c.id && 'pointer-events-none opacity-50')}>
+              <Link
+                to={`/courses/${c.id}`}
+                className="block h-full overflow-hidden rounded-lg bg-raised shadow-e1 transition-shadow hover:shadow-e2 focus-visible:outline-2 focus-visible:outline-accent"
+              >
+                <div className="h-1" style={{ background: c.color }} />
+                <div className="space-y-4 p-6">
+                  <div className="flex items-start gap-3 pr-8">
+                    <CourseIconTile icon={c.icon} color={c.color} size="sm" />
+                    <div className="min-w-0">
+                      <h2 className="text-lg leading-tight font-semibold">{c.name}</h2>
+                      <p className="mt-1 text-sm text-ink-3">{courseMeta(c)}</p>
+                    </div>
+                  </div>
+                  <div className="space-y-1 text-sm">
+                    {c.inProgressSessions > 0 && (
+                      <p className="flex items-center gap-2 text-tint-blue-icon">
+                        <Play className="size-4" /> {plural(c.inProgressSessions, 'séance en cours', 'séances en cours')}
+                      </p>
+                    )}
+                    {c.activeWeakPoints > 0 && (
+                      <p className="flex items-center gap-2 text-tint-yellow-icon">
+                        <Flame className="size-4" /> {plural(c.activeWeakPoints, 'point bloquant', 'points bloquants')}
+                      </p>
+                    )}
+                    {c.inProgressSessions === 0 && c.activeWeakPoints === 0 && <p className="text-ink-3">Rien en cours</p>}
                   </div>
                 </div>
-                <div className="space-y-1 text-sm">
-                  {c.inProgressSessions > 0 && (
-                    <p className="flex items-center gap-2 text-tint-blue-icon">
-                      <Play className="size-4" /> {plural(c.inProgressSessions, 'séance en cours', 'séances en cours')}
-                    </p>
-                  )}
-                  {c.activeWeakPoints > 0 && (
-                    <p className="flex items-center gap-2 text-tint-yellow-icon">
-                      <Flame className="size-4" /> {plural(c.activeWeakPoints, 'point bloquant', 'points bloquants')}
-                    </p>
-                  )}
-                  {c.inProgressSessions === 0 && c.activeWeakPoints === 0 && <p className="text-ink-3">Rien en cours</p>}
-                </div>
-              </div>
-            </Link>
+              </Link>
+              {/* Hors du lien : la corbeille n'ouvre pas le cours. Visible au survol sur ordinateur, toujours sur mobile. */}
+              <IconButton
+                label={`Supprimer « ${c.name} »`}
+                onClick={() => deleteCourse.ask(c)}
+                className="absolute top-4 right-4 transition-opacity sm:opacity-0 sm:group-focus-within:opacity-100 sm:group-hover:opacity-100"
+              >
+                <Trash2 className="size-4" />
+              </IconButton>
+            </div>
           ))}
         </div>
-      )}
-
-      {usage.data && usage.data.calls > 0 && (
-        <p className="mt-16 text-xs text-ink-3">
-          Consommation IA estimée : {usage.data.costUsd.toFixed(2)} $ ({plural(usage.data.calls, 'appel', 'appels')})
-        </p>
       )}
 
       <Modal
@@ -151,6 +158,7 @@ export function Dashboard() {
             <TextInput autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Algèbre linéaire" />
           </Field>
           <ColorPicker value={color} onChange={setColor} />
+          <IconPicker value={icon} onChange={setIcon} color={color} />
           <ErrorBox error={create.error} />
         </form>
       </Modal>

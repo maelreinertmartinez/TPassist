@@ -181,3 +181,20 @@ export const EiGenSchema = z.object({
   ),
 });
 export type EiGen = z.infer<typeof EiGenSchema>;
+
+export const NotionKindEnum = z.enum(['concept', 'definition', 'theoreme', 'propriete', 'methode', 'formule']);
+
+export const NotionMapSchema = z.object({
+  notions: z.array(
+    z.object({
+      key: z.string().describe('Identifiant court et unique de la notion (slug, ex. « base-dimension »)'),
+      title: z.string().describe('Nom de la notion, 6 mots au plus'),
+      summary: z.string().describe('Une phrase qui dit ce que c’est'),
+      kind: NotionKindEnum.describe('concept, definition, theoreme, propriete, methode ou formule'),
+      parentKey: z.string().nullable().describe('Clé de la notion principale de CE chapitre dont elle est une sous-notion ; null pour une notion principale'),
+      sectionIds: z.array(z.string()).describe('Ids exacts des sections où la notion est présentée'),
+      prerequisiteKeys: z.array(z.string()).describe('Clés des notions (de ce chapitre ou des chapitres précédents) nécessaires pour la comprendre, 0 à 3'),
+    }),
+  ),
+});
+export type NotionMap = z.infer<typeof NotionMapSchema>;

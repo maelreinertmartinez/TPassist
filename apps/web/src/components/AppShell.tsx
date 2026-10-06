@@ -3,29 +3,43 @@ import type { AiHealth } from '@tpassist/shared';
 import clsx from 'clsx';
 import { ChevronRight, GraduationCap } from 'lucide-react';
 import { Fragment } from 'react';
-import { Link, Outlet } from 'react-router-dom';
+import { Link, NavLink, Outlet } from 'react-router-dom';
 import { api } from '../lib/api';
 import { BreadcrumbProvider, useCrumbs } from '../lib/breadcrumbs';
 import { ConfirmProvider } from './ui';
 
-export function AiStatus() {
-  const { data, isLoading, refetch, isFetching } = useQuery({
+export function useAiHealth() {
+  return useQuery({
     queryKey: ['health-ai'],
     queryFn: () => api.get<AiHealth>('/api/health/ai'),
     staleTime: 10 * 60 * 1000,
   });
+}
+
+export function aiStatusView(data: AiHealth | undefined, isLoading: boolean) {
   const dot = isLoading ? 'bg-grey-400' : data?.ok ? (data.mock ? 'bg-yellow-500' : 'bg-green-500') : 'bg-red-500';
   const label = isLoading ? 'Vérification de l’IA…' : data?.ok ? (data.mock ? 'IA simulée' : 'IA connectée') : 'IA indisponible';
+  return { dot, label };
+}
+
+/** État de l'IA dans la barre du haut : ouvre la page des statistiques d'utilisation. */
+export function AiStatus() {
+  const { data, isLoading, isFetching } = useAiHealth();
+  const { dot, label } = aiStatusView(data, isLoading);
   return (
-    <button
-      type="button"
-      onClick={() => refetch()}
-      title={data ? `${data.message}\nModèle : ${data.model}\nCliquer pour revérifier` : ''}
-      className="no-print inline-flex shrink-0 items-center gap-2 rounded px-2 py-1 text-sm whitespace-nowrap text-ink-3 transition-colors hover:bg-hover hover:text-ink"
+    <NavLink
+      to="/stats"
+      title={`${data ? `${data.message}\n` : ''}Voir les statistiques d’utilisation de l’IA`}
+      className={({ isActive }) =>
+        clsx(
+          'no-print inline-flex shrink-0 items-center gap-2 rounded px-2 py-1 text-sm whitespace-nowrap transition-colors hover:bg-hover hover:text-ink',
+          isActive ? 'bg-hover text-ink' : 'text-ink-3',
+        )
+      }
     >
       <span className={clsx('size-2 shrink-0 rounded-full', dot, isFetching && 'animate-pulse')} />
       <span className="sr-only sm:not-sr-only">{label}</span>
-    </button>
+    </NavLink>
   );
 }
 

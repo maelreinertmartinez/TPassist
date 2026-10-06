@@ -7,6 +7,7 @@ import type {
   HelpKind,
   JobStatus,
   JobType,
+  NotionKind,
   QuestionFlags,
   QuestionStatus,
   QuizItemType,
@@ -31,6 +32,11 @@ export const courses = sqliteTable('courses', {
   id: id(),
   name: text('name').notNull(),
   color: text('color').notNull().default('#4f46e5'),
+  /** Clé d'icône (jeu d'icônes défini côté front). */
+  icon: text('icon').notNull().default('graduation-cap'),
+  /** Empreinte des sections de cours lors de la dernière génération de la carte des notions. */
+  notionsSignature: text('notions_signature'),
+  notionsGeneratedAt: integer('notions_generated_at'),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 });
@@ -94,6 +100,30 @@ export const courseSections = sqliteTable(
     contentMd: text('content_md').notNull().default(''),
   },
   (t) => [index('sections_unit_idx').on(t.unitId), index('sections_course_idx').on(t.courseId)],
+);
+
+export const notions = sqliteTable(
+  'notions',
+  {
+    id: id(),
+    courseId: text('course_id')
+      .notNull()
+      .references(() => courses.id, { onDelete: 'cascade' }),
+    unitId: text('unit_id')
+      .notNull()
+      .references(() => units.id, { onDelete: 'cascade' }),
+    parentId: text('parent_id'),
+    order: integer('order').notNull().default(0),
+    title: text('title').notNull(),
+    summary: text('summary').notNull().default(''),
+    kind: text('kind').$type<NotionKind>().notNull().default('concept'),
+    sectionIds: text('section_ids', { mode: 'json' }).$type<string[]>().notNull().default([]),
+    prerequisiteIds: text('prerequisite_ids', { mode: 'json' }).$type<string[]>().notNull().default([]),
+    /** Fiche détaillée rédigée par l'IA (générée au premier clic). */
+    detailMd: text('detail_md'),
+    createdAt: createdAt(),
+  },
+  (t) => [index('notions_course_idx').on(t.courseId)],
 );
 
 export const exercises = sqliteTable(

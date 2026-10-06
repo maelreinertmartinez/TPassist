@@ -10,6 +10,7 @@ const LABELS: Record<JobType, string> = {
   report: 'Bilan de séance',
   quiz: 'Génération d’un quiz',
   generate_ei: 'Génération d’une EI blanche',
+  notions: 'Carte des notions',
 };
 
 /** Tâches en cours ou en échec, affichées en encadrés (les tâches terminées disparaissent). */

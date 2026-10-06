@@ -131,12 +131,14 @@ export function Callout({
   id?: string;
 }) {
   const t = TONE_CLASSES[tone];
+  // L'icône est centrée sur la ligne du titre : même hauteur (24 px, ou 32 px si un bouton l'accompagne à droite).
+  const rowHeight = aside ? 'h-8' : 'h-6';
   return (
     <div id={id} className={clsx('print-break flex gap-3 rounded-lg px-4 py-3', t.box, className)}>
-      {icon && <span className={clsx('flex h-6 shrink-0 items-center', t.icon)}>{icon}</span>}
+      {icon && <span className={clsx('flex shrink-0 items-center', rowHeight, t.icon)}>{icon}</span>}
       <div className="min-w-0 flex-1">
         {(title || aside) && (
-          <div className="flex min-h-6 flex-wrap items-center justify-between gap-2">
+          <div className={clsx('flex flex-wrap items-center justify-between gap-2', aside ? 'min-h-8' : 'min-h-6')}>
             {title && <p className="text-sm font-semibold">{title}</p>}
             {aside}
           </div>

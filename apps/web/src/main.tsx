@@ -10,6 +10,7 @@ import { Dashboard } from './pages/Dashboard';
 import { QuizPlayer } from './pages/QuizPlayer';
 import { ReportView } from './pages/ReportView';
 import { SessionPlayer } from './pages/SessionPlayer';
+import { StatsPage } from './pages/StatsPage';
 import { UnitEditor } from './pages/UnitEditor';
 
 const queryClient = new QueryClient({
@@ -26,6 +27,7 @@ const router = createBrowserRouter([
       { path: '/sessions/:sessionId', element: <SessionPlayer /> },
       { path: '/reports/:reportId', element: <ReportView /> },
       { path: '/quizzes/:quizId', element: <QuizPlayer /> },
+      { path: '/stats', element: <StatsPage /> },
     ],
   },
 ]);
