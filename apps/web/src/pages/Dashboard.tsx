@@ -1,23 +1,22 @@
+// Tableau de bord : les cours en tuiles (création, suppression) et l'alerte si l'IA est indisponible.
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { AiHealth, CourseSummary } from '@tpassist/shared';
+import { COURSE_COLORS, type CourseSummary } from '@tpassist/shared';
 import clsx from 'clsx';
 import { AlertTriangle, BookOpen, Flame, Play, Plus, Trash2 } from 'lucide-react';
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Button, Callout, EmptyState, ErrorBox, Field, IconButton, Modal, Spinner, TextInput } from '../components/ui';
+import { useAiHealth } from '../components/AppShell';
+import { ColorPicker, CourseIconTile, IconPicker } from '../components/CourseAppearance';
+import { Button, Callout, EmptyState, ErrorBox, Field, IconButton, Modal, Page, Spinner, TextInput } from '../components/ui';
 import { api } from '../lib/api';
 import { useBreadcrumbs } from '../lib/breadcrumbs';
-import { COURSE_COLORS } from '../lib/colors';
-import { CourseIconTile, IconPicker } from '../lib/courseIcons';
+import { plural } from '../lib/format';
 import { useDeleteCourse } from '../lib/useDeleteCourse';
 
-function plural(n: number, one: string, many: string) {
-  return `${n} ${n > 1 ? many : one}`;
-}
-
+/** Contenu du cours en une ligne : « 3 chapitres · 2 TD · 1 EI ». */
 function courseMeta(c: CourseSummary) {
   const parts = [
-    c.counts.cours && plural(c.counts.cours, 'chapitre', 'chapitres'),
+    c.counts.cours && plural(c.counts.cours, 'chapitre'),
     c.counts.td && `${c.counts.td} TD`,
     c.counts.tp && `${c.counts.tp} TP`,
     c.counts.ei && plural(c.counts.ei, 'EI', 'EI'),
@@ -25,15 +24,16 @@ function courseMeta(c: CourseSummary) {
   return parts.length ? parts.join(' · ') : 'Aucun document pour l’instant';
 }
 
+/** Tableau de bord (route /). */
 export function Dashboard() {
   useBreadcrumbs([]);
   const qc = useQueryClient();
   const navigate = useNavigate();
   const courses = useQuery({ queryKey: ['courses'], queryFn: () => api.get<CourseSummary[]>('/api/courses') });
-  const health = useQuery({ queryKey: ['health-ai'], queryFn: () => api.get<AiHealth>('/api/health/ai'), staleTime: 10 * 60 * 1000 });
+  const health = useAiHealth();
   const [open, setOpen] = useState(false);
   const [name, setName] = useState('');
-  const [color, setColor] = useState(COURSE_COLORS[0]);
+  const [color, setColor] = useState<string>(COURSE_COLORS[0]);
   const [icon, setIcon] = useState('graduation-cap');
   const deleteCourse = useDeleteCourse();
 
@@ -50,7 +50,7 @@ export function Dashboard() {
   const hasCourses = Boolean(courses.data?.length);
 
   return (
-    <div className="mx-auto max-w-5xl px-4 pt-12 pb-24 sm:px-6">
+    <Page>
       <header className="mb-12 flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="text-3xl font-semibold tracking-tight">Mes cours</h1>
@@ -162,27 +162,6 @@ export function Dashboard() {
           <ErrorBox error={create.error} />
         </form>
       </Modal>
-    </div>
-  );
-}
-
-export function ColorPicker({ value, onChange }: { value: string; onChange: (c: string) => void }) {
-  return (
-    <fieldset>
-      <legend className="mb-2 text-sm font-semibold">Couleur</legend>
-      <div className="flex flex-wrap gap-2">
-        {COURSE_COLORS.map((c) => (
-          <button
-            type="button"
-            key={c}
-            onClick={() => onChange(c)}
-            aria-label={`Couleur ${c}`}
-            aria-pressed={value === c}
-            className="size-8 rounded-full ring-offset-2 ring-offset-page transition-shadow aria-pressed:ring-2 aria-pressed:ring-ink"
-            style={{ background: c }}
-          />
-        ))}
-      </div>
-    </fieldset>
+    </Page>
   );
 }

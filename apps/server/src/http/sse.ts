@@ -1,5 +1,7 @@
+// Réponses diffusées au fil de l'eau (Server-Sent Events) pour les générations de l'IA.
 import type { FastifyReply } from 'fastify';
-import { HttpError } from '../db/repo';
+import { HttpError } from '../errors';
+import { errorText } from '../utils';
 
 /**
  * Exécute `run` en diffusant le texte produit en Server-Sent Events :
@@ -27,7 +29,7 @@ export async function streamSse<T>(reply: FastifyReply, run: (onText: (delta: st
     send('done', result);
   } catch (err) {
     const status = err instanceof HttpError ? err.status : 500;
-    const message = err instanceof Error ? err.message : String(err);
+    const message = errorText(err);
     if (status >= 500) console.error('[sse]', err);
     send('error', { message, status, code: err instanceof HttpError ? err.code : undefined });
   } finally {

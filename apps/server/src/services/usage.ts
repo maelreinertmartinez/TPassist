@@ -1,3 +1,4 @@
+// Statistiques des appels IA (table ai_calls), agrégées en SQL pour la page Statistiques.
 import type { AiUsageStats, UsageTotals } from '@tpassist/shared';
 import { rawDb } from '../db/client';
 

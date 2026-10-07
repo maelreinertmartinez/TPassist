@@ -1,11 +1,14 @@
+// Encadrés des aides obtenues sur une question (reformulation, partie de cours, indication, solution).
 import type { CourseRef, EventKind, HelpEventDto } from '@tpassist/shared';
 import { BookOpen, CheckCircle2, Lightbulb, Loader2, MessageSquareText, Sparkles } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
 import { Markdown } from './Markdown';
 import { Callout, Modal, type Tone } from './ui';
 
+/** Aides affichées sous l'énoncé (les détails d'erreur sont affichés avec la réponse fausse). */
 export type HelpKindShown = Exclude<EventKind, 'error_location' | 'error_explanation'>;
 
+/** Titre, icône, teinte et ordre d'affichage de chaque aide. */
 export const HELP_META: Record<HelpKindShown, { title: string; icon: ReactNode; tone: Tone; order: number }> = {
   reformulation: { title: 'Reformulation', icon: <MessageSquareText className="size-4" />, tone: 'grey', order: 0 },
   course_refs: { title: 'Partie de cours utile', icon: <BookOpen className="size-4" />, tone: 'blue', order: 1 },
@@ -13,6 +16,7 @@ export const HELP_META: Record<HelpKindShown, { title: string; icon: ReactNode; 
   solution: { title: 'Solution expliquée', icon: <CheckCircle2 className="size-4" />, tone: 'green', order: 3 },
 };
 
+/** Encadré d'une aide ; `streaming` : le texte arrive encore. */
 export function HelpCard({ kind, contentMd, courseRefs, solutionSource, streaming }: Partial<HelpEventDto> & { kind: HelpKindShown; streaming?: boolean }) {
   const meta = HELP_META[kind];
   return (

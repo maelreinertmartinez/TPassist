@@ -1,9 +1,10 @@
 // Étapes des boutons d'aide « successifs » du lecteur de TD/TP.
 // Le serveur reste maître des verrous : ces fonctions ne font que choisir l'étape à proposer.
-import type { AttemptDto, EventKind, LockInfo, LocksDto } from './index';
+import type { AttemptDto, EventKind, LockInfo, LocksDto } from './sessions';
 
 const OPEN: LockInfo = { unlocked: true, remainingMs: 0 };
 
+/** Étape du bouton d’aide. */
 export type HelpStep = 'course_refs' | 'hint' | 'solution' | 'done';
 
 /** Bouton d'aide : partie de cours → (délai) indice → (délai) solution. */
@@ -15,6 +16,7 @@ export function nextHelpStep(events: { kind: EventKind }[], locks: LocksDto | nu
   return { step: 'solution', lock: locks?.solution ?? null };
 }
 
+/** Étape du bouton d’erreur. */
 export type ErrorStep = 'location' | 'explanation' | 'solution' | 'done';
 
 /**

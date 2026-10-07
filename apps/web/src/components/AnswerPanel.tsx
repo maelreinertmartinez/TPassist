@@ -1,3 +1,4 @@
+// Saisie d'une réponse : texte avec LaTeX (aperçu en direct), code (éditeur avec coloration) ou photo de copie.
 import { cpp } from '@codemirror/lang-cpp';
 import { java } from '@codemirror/lang-java';
 import { javascript } from '@codemirror/lang-javascript';
@@ -7,7 +8,8 @@ import CodeMirror from '@uiw/react-codemirror';
 import { CODE_LANGUAGES, type AnswerType, type CodeLanguage, type SubmitAttemptBody } from '@tpassist/shared';
 import { Camera, Code2, Eye, ImagePlus, Type, X } from 'lucide-react';
 import { useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { imageFileToDataUrl } from '../lib/format';
+import { errorMessage } from '../lib/api';
+import { imageFileToDataUrl, imageFromClipboard } from '../lib/images';
 import { Markdown } from './Markdown';
 import { Button, IconButton, inputClass, Segmented } from './ui';
 
@@ -23,6 +25,7 @@ const LANG_EXT: Record<CodeLanguage, () => ReturnType<typeof python> | null> = {
 
 const LANG_LABEL: Record<CodeLanguage, string> = { python: 'Python', c: 'C', cpp: 'C++', java: 'Java', javascript: 'JavaScript', sql: 'SQL', autre: 'Autre' };
 
+/** Suit le thème clair/sombre du système (pour l'éditeur de code). */
 function usePrefersDark() {
   return useSyncExternalStore(
     (cb) => {
@@ -34,22 +37,27 @@ function usePrefersDark() {
   );
 }
 
+/** Brouillon de réponse, gardé par question tant qu'il n'est pas envoyé. */
 export interface AnswerDraft {
   type: AnswerType;
   text: string;
   code: string;
   codeLang: CodeLanguage;
+  /** Photo réduite, en data URL JPEG. */
   image: string | null;
 }
 
+/** Brouillon vide (réponse texte, code Python par défaut). */
 export const emptyDraft = (): AnswerDraft => ({ type: 'text', text: '', code: '', codeLang: 'python', image: null });
 
+/** Corps de la requête d'envoi d'une réponse (seul le type choisi est envoyé). */
 export function draftToBody(questionId: string, d: AnswerDraft): SubmitAttemptBody {
   if (d.type === 'code') return { questionId, type: 'code', code: d.code, codeLang: d.codeLang };
   if (d.type === 'image') return { questionId, type: 'image', imageDataUrl: d.image ?? undefined, text: d.text || undefined };
   return { questionId, type: 'text', text: d.text };
 }
 
+/** Le brouillon contient une réponse non vide du type choisi. */
 export function canSubmitDraft(d: AnswerDraft) {
   return d.type === 'text' ? d.text.trim().length > 0 : d.type === 'code' ? d.code.trim().length > 0 : Boolean(d.image);
 }
@@ -58,7 +66,7 @@ export function canSubmitDraft(d: AnswerDraft) {
  * Éditeur de réponse qui remplit toute la hauteur disponible (le parent est une colonne flex).
  * Le bouton de validation est rendu par le parent, épinglé en bas du panneau.
  */
-export function AnswerPanel({ draft, onChange, onSubmit, disabled }: { draft: AnswerDraft; onChange: (d: AnswerDraft) => void; onSubmit: () => void; disabled?: boolean }) {
+export function AnswerPanel({ draft, onChange, onSubmit }: { draft: AnswerDraft; onChange: (d: AnswerDraft) => void; onSubmit: () => void }) {
   const dark = usePrefersDark();
   const fileInput = useRef<HTMLInputElement>(null);
   const cameraInput = useRef<HTMLInputElement>(null);
@@ -75,7 +83,7 @@ export function AnswerPanel({ draft, onChange, onSubmit, disabled }: { draft: An
       setImgError(null);
       onChange({ ...draft, image: await imageFileToDataUrl(file) });
     } catch (e) {
-      setImgError(e instanceof Error ? e.message : String(e));
+      setImgError(errorMessage(e));
     }
   };
 
@@ -118,7 +126,6 @@ export function AnswerPanel({ draft, onChange, onSubmit, disabled }: { draft: An
         <>
           <textarea
             value={draft.text}
-            disabled={disabled}
             onChange={(e) => onChange({ ...draft, text: e.target.value })}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && canSubmitDraft(draft)) onSubmit();
@@ -143,7 +150,6 @@ export function AnswerPanel({ draft, onChange, onSubmit, disabled }: { draft: An
               height="100%"
               theme={dark ? 'dark' : 'light'}
               extensions={ext}
-              editable={!disabled}
               onChange={(code) => onChange({ ...draft, code })}
               basicSetup={{ lineNumbers: true, foldGutter: false, highlightActiveLine: true }}
             />
@@ -154,7 +160,7 @@ export function AnswerPanel({ draft, onChange, onSubmit, disabled }: { draft: An
       {draft.type === 'image' && (
         <div
           className="flex min-h-48 flex-1 flex-col gap-3"
-          onPaste={(e) => loadImage([...e.clipboardData.files].find((f) => f.type.startsWith('image/')))}
+          onPaste={(e) => loadImage(imageFromClipboard(e))}
           tabIndex={0}
         >
           {draft.image ? (

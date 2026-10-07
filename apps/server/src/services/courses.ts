@@ -1,45 +1,50 @@
-import { and, asc, desc, eq, inArray } from 'drizzle-orm';
-import { rm, writeFile, mkdir } from 'node:fs/promises';
-import { isAbsolute, join, relative } from 'node:path';
-import type { CourseDetail, CourseSummary, DocumentDto, JobDto, ReportDto, SectionDto, UnitDto } from '@tpassist/shared';
+// Cours : tableau de bord, création, modification, suppression et page de détail.
+import { and, asc, desc, eq, gt, inArray, or } from 'drizzle-orm';
+import { COURSE_COLORS, type CourseDetail, type CourseSummary, type SectionDto, type UnitDto } from '@tpassist/shared';
+import { rm } from 'node:fs/promises';
+import { join } from 'node:path';
 import { config } from '../config';
 import { db, newId } from '../db/client';
-import { deleteUnits, HttpError, notFound } from '../db/repo';
-import { attempts, chatMessages, chatThreads, courseSections, courses, documents, jobs, notions, questions, reports, sessionQuestions, sessions, units, weakPoints } from '../db/schema';
-import { enqueueJob } from '../jobs/queue';
+import { countWhere, courseUnits, deleteUnits, findById } from '../db/repo';
+import { attempts, chatMessages, chatThreads, courseSections, courses, documents, jobs, notions, questions, sessions } from '../db/schema';
+import { HttpError } from '../errors';
+import { jobDto } from '../jobs/queue';
+import { listDocuments, removeDocumentFiles } from './documents';
+import { removeImages } from './images';
 import { listQuizzes } from './quiz';
 import { listSessions } from './sessions';
-import { reviewQuizSize } from './struggle';
-import { listWeakPoints } from './weakPoints';
+import { activeWeakPoints, listWeakPoints } from './weakPoints';
 
-const PALETTE = ['#4f46e5', '#0891b2', '#059669', '#d97706', '#dc2626', '#7c3aed', '#db2777', '#2563eb'];
+/** Les tâches terminées restent visibles 10 minutes sur la page du cours. */
+const RECENT_JOB_MS = 10 * 60 * 1000;
 
+/** Tuiles du tableau de bord, dans l'ordre de création. */
 export function listCourses(): CourseSummary[] {
-  const rows = db.select().from(courses).orderBy(asc(courses.createdAt)).all();
-  return rows.map((c) => {
-    const us = db.select({ kind: units.kind }).from(units).where(eq(units.courseId, c.id)).all();
-    const count = (k: string) => us.filter((u) => u.kind === k).length;
-    const inProgress = db
-      .select({ id: sessions.id })
-      .from(sessions)
-      .where(and(eq(sessions.courseId, c.id), eq(sessions.status, 'in_progress')))
-      .all().length;
-    const wps = db
-      .select({ id: weakPoints.id })
-      .from(weakPoints)
-      .where(and(eq(weakPoints.courseId, c.id), eq(weakPoints.status, 'active')))
-      .all().length;
-    return {
-      id: c.id,
-      name: c.name,
-      color: c.color,
-      icon: c.icon,
-      createdAt: c.createdAt,
-      counts: { cours: count('cours'), td: count('td'), tp: count('tp'), ei: count('ei') },
-      inProgressSessions: inProgress,
-      activeWeakPoints: wps,
-    };
-  });
+  return db
+    .select()
+    .from(courses)
+    .orderBy(asc(courses.createdAt))
+    .all()
+    .map((c) => {
+      const kinds = courseUnits(c.id).map((u) => u.kind);
+      const count = (k: string) => kinds.filter((kind) => kind === k).length;
+      return {
+        id: c.id,
+        name: c.name,
+        color: c.color,
+        icon: c.icon,
+        createdAt: c.createdAt,
+        counts: { cours: count('cours'), td: count('td'), tp: count('tp'), ei: count('ei') },
+        inProgressSessions: countWhere(sessions, and(eq(sessions.courseId, c.id), eq(sessions.status, 'in_progress'))),
+        activeWeakPoints: activeWeakPoints(c.id).length,
+      };
+    });
+}
+
+function checkName(name: string): string {
+  const n = name.trim();
+  if (!n) throw new HttpError(400, 'Le nom du cours est obligatoire.');
+  return n;
 }
 
 /** Clé d'icône : identifiant court (le jeu d'icônes est défini côté front). */
@@ -48,96 +53,75 @@ function checkIcon(icon: string): string {
   return icon;
 }
 
+/** Crée un cours ; sans couleur choisie, les couleurs de la palette sont prises à tour de rôle. */
 export function createCourse(name: string, color?: string, icon?: string) {
-  const n = name.trim();
-  if (!n) throw new HttpError(400, 'Le nom du cours est obligatoire.');
-  const count = db.select({ id: courses.id }).from(courses).all().length;
   return db
     .insert(courses)
-    .values({ id: newId(), name: n, color: color || PALETTE[count % PALETTE.length], ...(icon ? { icon: checkIcon(icon) } : {}) })
+    .values({
+      id: newId(),
+      name: checkName(name),
+      color: color || COURSE_COLORS[countWhere(courses) % COURSE_COLORS.length],
+      ...(icon ? { icon: checkIcon(icon) } : {}),
+    })
     .returning()
     .get();
 }
 
+/** Renomme un cours ou change sa couleur ou son icône. 404 si le cours n'existe pas. */
 export function updateCourse(id: string, patch: { name?: string; color?: string; icon?: string }) {
   const set: Partial<typeof courses.$inferInsert> = { updatedAt: Date.now() };
-  if (patch.name !== undefined) {
-    if (!patch.name.trim()) throw new HttpError(400, 'Le nom du cours est obligatoire.');
-    set.name = patch.name.trim();
-  }
+  if (patch.name !== undefined) set.name = checkName(patch.name);
   if (patch.color) set.color = patch.color;
   if (patch.icon) set.icon = checkIcon(patch.icon);
-  const row = db.update(courses).set(set).where(eq(courses.id, id)).returning().get();
-  return row ?? notFound('Cours');
+  return db.update(courses).set(set).where(eq(courses.id, id)).returning().get() ?? findById(courses, id, 'Cours');
 }
 
 /** Supprime un cours, tout ce qui en dépend en base et ses fichiers (PDF, pages rendues, photos de réponses et du chat). */
 export async function deleteCourse(id: string) {
-  db.select({ id: courses.id }).from(courses).where(eq(courses.id, id)).get() ?? notFound('Cours');
-  const unitIds = db.select({ id: units.id }).from(units).where(eq(units.courseId, id)).all().map((u) => u.id);
-  const docIds = db.select({ id: documents.id }).from(documents).where(eq(documents.courseId, id)).all().map((d) => d.id);
-  const sessionIds = db.select({ id: sessions.id }).from(sessions).where(eq(sessions.courseId, id)).all().map((s) => s.id);
-  const photos = [
+  findById(courses, id, 'Cours');
+  const docs = db.select({ id: documents.id, path: documents.path }).from(documents).where(eq(documents.courseId, id)).all();
+  const photos = coursePhotos(id);
+  deleteUnits(courseUnits(id).map((u) => u.id));
+  db.delete(courses).where(eq(courses.id, id)).run();
+  // Les tâches pas encore lancées n'ont plus d'objet (une tâche déjà en cours échouera sans conséquence).
+  db.delete(jobs).where(and(eq(jobs.courseId, id), eq(jobs.status, 'queued'))).run();
+  for (const d of docs) await removeDocumentFiles(d);
+  await rm(join(config.filesDir, id), { recursive: true, force: true });
+  await removeImages(photos);
+}
+
+/** Photos de copies et images du chat d'un cours. */
+function coursePhotos(courseId: string): string[] {
+  const sessionIds = db.select({ id: sessions.id }).from(sessions).where(eq(sessions.courseId, courseId)).all().map((s) => s.id);
+  const rows = [
     ...(sessionIds.length ? db.select({ path: attempts.imagePath }).from(attempts).where(inArray(attempts.sessionId, sessionIds)).all() : []),
     ...db
       .select({ path: chatMessages.imagePath })
       .from(chatMessages)
       .innerJoin(chatThreads, eq(chatThreads.id, chatMessages.threadId))
-      .where(eq(chatThreads.courseId, id))
+      .where(eq(chatThreads.courseId, courseId))
       .all(),
-  ]
-    .map((r) => r.path)
-    .filter((p): p is string => Boolean(p));
-  deleteUnits(unitIds);
-  db.delete(courses).where(eq(courses.id, id)).run();
-  // Les tâches pas encore lancées n'ont plus d'objet (une tâche déjà en cours échouera sans conséquence).
-  db.delete(jobs).where(and(eq(jobs.courseId, id), eq(jobs.status, 'queued'))).run();
-  await rm(join(config.filesDir, id), { recursive: true, force: true });
-  for (const d of docIds) await rm(join(config.pagesDir, d), { recursive: true, force: true });
-  for (const p of photos) {
-    // Par prudence, on ne supprime que dans le dossier des photos.
-    const inside = relative(config.answersDir, p);
-    if (inside && !inside.startsWith('..') && !isAbsolute(inside)) await rm(p, { force: true });
-  }
+  ];
+  return rows.map((r) => r.path).filter((p): p is string => Boolean(p));
 }
 
-export function documentDto(d: typeof documents.$inferSelect): DocumentDto {
-  return { id: d.id, filename: d.filename, pageCount: d.pageCount, status: d.status, error: d.error, createdAt: d.createdAt };
-}
-
+/** Unités d'un cours pour le front, avec leurs compteurs et le nom de leur document. */
 export function unitDtos(courseId: string): UnitDto[] {
-  const rows = db.select().from(units).where(eq(units.courseId, courseId)).orderBy(asc(units.order)).all();
-  const docs = new Map(
-    db
-      .select({ id: documents.id, filename: documents.filename })
-      .from(documents)
-      .where(eq(documents.courseId, courseId))
-      .all()
-      .map((d) => [d.id, d.filename]),
+  const rows = courseUnits(courseId);
+  const docNames = new Map(
+    db.select({ id: documents.id, filename: documents.filename }).from(documents).where(eq(documents.courseId, courseId)).all().map((d) => [d.id, d.filename]),
   );
   const ids = rows.map((r) => r.id);
-  const qCounts = new Map<string, number>();
-  const sCounts = new Map<string, number>();
-  if (ids.length) {
-    for (const q of db.select({ unitId: questions.unitId }).from(questions).where(inArray(questions.unitId, ids)).all()) {
-      qCounts.set(q.unitId, (qCounts.get(q.unitId) ?? 0) + 1);
-    }
-    for (const s of db.select({ unitId: courseSections.unitId }).from(courseSections).where(inArray(courseSections.unitId, ids)).all()) {
-      sCounts.set(s.unitId, (sCounts.get(s.unitId) ?? 0) + 1);
-    }
-  }
-  const corrected = new Set(rows.filter((r) => r.kind === 'corrige' && r.correctsUnitId).map((r) => r.correctsUnitId!));
-  const withInline = new Set(
-    ids.length
-      ? db
-          .select({ unitId: questions.unitId, sol: questions.officialSolutionMd })
-          .from(questions)
-          .where(inArray(questions.unitId, ids))
-          .all()
-          .filter((q) => q.sol)
-          .map((q) => q.unitId)
-      : [],
-  );
+  const qs = ids.length
+    ? db.select({ unitId: questions.unitId, solution: questions.officialSolutionMd }).from(questions).where(inArray(questions.unitId, ids)).all()
+    : [];
+  const secs = ids.length ? db.select({ unitId: courseSections.unitId }).from(courseSections).where(inArray(courseSections.unitId, ids)).all() : [];
+  const tally = (list: { unitId: string }[], id: string) => list.filter((x) => x.unitId === id).length;
+  // Une unité est corrigée si un corrigé y est rattaché ou si ses questions ont une solution intégrée au sujet.
+  const corrected = new Set([
+    ...rows.filter((r) => r.kind === 'corrige' && r.correctsUnitId).map((r) => r.correctsUnitId!),
+    ...qs.filter((q) => q.solution).map((q) => q.unitId),
+  ]);
   return rows.map((u) => ({
     id: u.id,
     courseId: u.courseId,
@@ -145,123 +129,48 @@ export function unitDtos(courseId: string): UnitDto[] {
     title: u.title,
     order: u.order,
     documentId: u.documentId,
-    documentName: u.documentId ? (docs.get(u.documentId) ?? null) : null,
+    documentName: u.documentId ? (docNames.get(u.documentId) ?? null) : null,
     pageStart: u.pageStart,
     pageEnd: u.pageEnd,
     origin: u.origin,
     correctsUnitId: u.correctsUnitId,
-    hasCorrection: corrected.has(u.id) || withInline.has(u.id),
-    questionCount: qCounts.get(u.id) ?? 0,
-    sectionCount: sCounts.get(u.id) ?? 0,
+    hasCorrection: corrected.has(u.id),
+    questionCount: tally(qs, u.id),
+    sectionCount: tally(secs, u.id),
     meta: u.kind === 'corrige' ? { targetTitle: u.meta.targetTitle, solutions: u.meta.solutions } : { durationMinutes: u.meta.durationMinutes ?? null, generation: u.meta.generation },
   }));
 }
 
-export function sectionDtos(courseId: string): SectionDto[] {
-  return db
-    .select()
-    .from(courseSections)
-    .where(eq(courseSections.courseId, courseId))
-    .orderBy(asc(courseSections.order))
-    .all()
-    .map((s) => ({ id: s.id, unitId: s.unitId, title: s.title, pageStart: s.pageStart, pageEnd: s.pageEnd, summary: s.summary, keyConcepts: s.keyConcepts }));
+/** Section de cours pour le front (sans son contenu complet). */
+export function sectionDto(s: typeof courseSections.$inferSelect): SectionDto {
+  return { id: s.id, unitId: s.unitId, title: s.title, pageStart: s.pageStart, pageEnd: s.pageEnd, summary: s.summary, keyConcepts: s.keyConcepts };
 }
 
-export function jobDto(j: typeof jobs.$inferSelect): JobDto {
-  return { id: j.id, type: j.type, status: j.status, progress: j.progress, message: j.message, error: j.error, refId: j.refId, createdAt: j.createdAt, updatedAt: j.updatedAt };
-}
-
-export function recentJobs(courseId: string): JobDto[] {
-  const cutoff = Date.now() - 10 * 60 * 1000;
+/** Tâches en attente, en cours, en erreur ou terminées depuis peu (les plus récentes d'abord). */
+function recentJobs(courseId: string) {
+  const since = Date.now() - RECENT_JOB_MS;
   return db
     .select()
     .from(jobs)
-    .where(eq(jobs.courseId, courseId))
+    .where(and(eq(jobs.courseId, courseId), or(inArray(jobs.status, ['queued', 'running', 'error']), gt(jobs.updatedAt, since))))
     .orderBy(desc(jobs.createdAt))
     .limit(30)
     .all()
-    .filter((j) => j.status === 'queued' || j.status === 'running' || j.updatedAt > cutoff || j.status === 'error')
     .map(jobDto);
 }
 
+/** Tout ce qu'affiche la page d'un cours. 404 si le cours n'existe pas. */
 export function getCourseDetail(id: string): CourseDetail {
-  const c = db.select().from(courses).where(eq(courses.id, id)).get() ?? notFound('Cours');
+  const c = findById(courses, id, 'Cours');
   return {
     course: { id: c.id, name: c.name, color: c.color, icon: c.icon, createdAt: c.createdAt },
-    documents: db.select().from(documents).where(eq(documents.courseId, id)).orderBy(asc(documents.createdAt)).all().map(documentDto),
+    documents: listDocuments(id),
     units: unitDtos(id),
-    sections: sectionDtos(id),
+    sections: db.select().from(courseSections).where(eq(courseSections.courseId, id)).orderBy(asc(courseSections.order)).all().map(sectionDto),
     jobs: recentJobs(id),
     sessions: listSessions(id),
     quizzes: listQuizzes(id),
     weakPoints: listWeakPoints(id),
-    notionCount: db.select({ id: notions.id }).from(notions).where(eq(notions.courseId, id)).all().length,
+    notionCount: countWhere(notions, eq(notions.courseId, id)),
   };
-}
-
-// ---------- Documents ----------
-
-export async function addDocument(courseId: string, filename: string, data: Buffer) {
-  db.select({ id: courses.id }).from(courses).where(eq(courses.id, courseId)).get() ?? notFound('Cours');
-  if (data.subarray(0, 5).toString() !== '%PDF-') throw new HttpError(400, `« ${filename} » n'est pas un PDF valide.`);
-  const id = newId();
-  const dir = join(config.filesDir, courseId);
-  await mkdir(dir, { recursive: true });
-  const path = join(dir, `${id}.pdf`);
-  await writeFile(path, data);
-  const doc = db.insert(documents).values({ id, courseId, filename, path, status: 'pending' }).returning().get();
-  const job = enqueueJob({ type: 'ingest', courseId, refId: id });
-  return { document: documentDto(doc), job: jobDto(job) };
-}
-
-export function reanalyzeDocument(id: string) {
-  const doc = db.select().from(documents).where(eq(documents.id, id)).get() ?? notFound('Document');
-  db.update(documents).set({ status: 'pending', error: null }).where(eq(documents.id, id)).run();
-  return jobDto(enqueueJob({ type: 'ingest', courseId: doc.courseId, refId: id }));
-}
-
-export async function deleteDocument(id: string) {
-  const doc = db.select().from(documents).where(eq(documents.id, id)).get() ?? notFound('Document');
-  const unitIds = db.select({ id: units.id }).from(units).where(eq(units.documentId, id)).all().map((u) => u.id);
-  deleteUnits(unitIds);
-  db.delete(documents).where(eq(documents.id, id)).run();
-  await rm(doc.path, { force: true });
-  await rm(join(config.pagesDir, id), { recursive: true, force: true });
-}
-
-export function documentSessionsCount(id: string): number {
-  const unitIds = db.select({ id: units.id }).from(units).where(eq(units.documentId, id)).all().map((u) => u.id);
-  if (!unitIds.length) return 0;
-  return db.select({ id: sessions.id }).from(sessions).where(inArray(sessions.unitId, unitIds)).all().length;
-}
-
-// ---------- Bilans ----------
-
-export function getReport(reportId: string): ReportDto {
-  const r = db.select().from(reports).where(eq(reports.id, reportId)).get() ?? notFound('Bilan');
-  const s = db.select().from(sessions).where(eq(sessions.id, r.sessionId)).get() ?? notFound('Session');
-  const unit = db.select().from(units).where(eq(units.id, s.unitId)).get() ?? notFound('Partie');
-  const flags = db.select({ flags: sessionQuestions.flags }).from(sessionQuestions).where(eq(sessionQuestions.sessionId, s.id)).all();
-  const { size, noStruggle } = reviewQuizSize(flags.map((f) => f.flags));
-  return {
-    id: r.id,
-    sessionId: s.id,
-    status: r.status,
-    error: r.error,
-    courseId: s.courseId,
-    unitTitle: unit.title,
-    unitKind: unit.kind,
-    mode: s.mode,
-    score: r.score,
-    createdAt: r.createdAt,
-    strengthsMd: r.content?.strengthsMd ?? '',
-    overallMd: r.content?.overallMd ?? '',
-    blockingPoints: r.content?.blockingPoints ?? [],
-    questions: r.content?.questions ?? [],
-    reviewQuiz: { proposedSize: size, noStruggle, quizId: s.reviewQuizId },
-  };
-}
-
-export function latestReportForSession(sessionId: string) {
-  return db.select().from(reports).where(eq(reports.sessionId, sessionId)).orderBy(desc(reports.createdAt)).get();
 }

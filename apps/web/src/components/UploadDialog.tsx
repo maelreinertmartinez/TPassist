@@ -1,3 +1,4 @@
+// Fenêtre d'ajout de PDF (glisser-déposer ou sélection) ; l'analyse démarre dès l'envoi.
 import { useMutation } from '@tanstack/react-query';
 import clsx from 'clsx';
 import { FileText, FileUp, X } from 'lucide-react';
@@ -5,6 +6,7 @@ import { useRef, useState } from 'react';
 import { api } from '../lib/api';
 import { Button, ErrorBox, IconButton, Modal } from './ui';
 
+/** @param onUploaded appelé après l'envoi (pour afficher les analyses en cours) */
 export function UploadDialog({ courseId, open, onClose, onUploaded }: { courseId: string; open: boolean; onClose: () => void; onUploaded: () => void }) {
   const [files, setFiles] = useState<File[]>([]);
   const [drag, setDrag] = useState(false);

@@ -1,3 +1,4 @@
+// Cadre commun des pages : barre du haut (fil d'Ariane, état de l'IA), fournisseurs du fil d'Ariane et des confirmations.
 import { useQuery } from '@tanstack/react-query';
 import type { AiHealth } from '@tpassist/shared';
 import clsx from 'clsx';
@@ -8,6 +9,7 @@ import { api } from '../lib/api';
 import { BreadcrumbProvider, useCrumbs } from '../lib/breadcrumbs';
 import { ConfirmProvider } from './ui';
 
+/** État de la connexion à l'IA (le serveur garde le résultat 10 minutes). */
 export function useAiHealth() {
   return useQuery({
     queryKey: ['health-ai'],
@@ -16,6 +18,7 @@ export function useAiHealth() {
   });
 }
 
+/** Pastille de couleur et libellé de l'état de l'IA. */
 export function aiStatusView(data: AiHealth | undefined, isLoading: boolean) {
   const dot = isLoading ? 'bg-grey-400' : data?.ok ? (data.mock ? 'bg-yellow-500' : 'bg-green-500') : 'bg-red-500';
   const label = isLoading ? 'Vérification de l’IA…' : data?.ok ? (data.mock ? 'IA simulée' : 'IA connectée') : 'IA indisponible';
@@ -23,7 +26,7 @@ export function aiStatusView(data: AiHealth | undefined, isLoading: boolean) {
 }
 
 /** État de l'IA dans la barre du haut : ouvre la page des statistiques d'utilisation. */
-export function AiStatus() {
+function AiStatus() {
   const { data, isLoading, isFetching } = useAiHealth();
   const { dot, label } = aiStatusView(data, isLoading);
   return (
@@ -77,6 +80,7 @@ function TopBar() {
   );
 }
 
+/** Mise en page de toutes les routes (les pages s'affichent dans l'Outlet). */
 export function AppShell() {
   return (
     <BreadcrumbProvider>

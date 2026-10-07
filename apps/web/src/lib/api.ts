@@ -1,3 +1,6 @@
+// Client HTTP de l'API : JSON en entrée et en sortie, erreurs du serveur converties en ApiError.
+
+/** Erreur renvoyée par l'API ; `code` identifie un cas précis (ex. `struggle_required`). */
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -39,6 +42,7 @@ function safeJson(text: string): unknown {
   }
 }
 
+/** Appels à l'API ; chaque méthode renvoie le JSON de la réponse ou lève une ApiError. */
 export const api = {
   get: <T>(url: string) => request<T>('GET', url),
   post: <T>(url: string, body?: unknown) => request<T>('POST', url, body ?? {}),
@@ -47,6 +51,7 @@ export const api = {
   upload: <T>(url: string, form: FormData) => request<T>('POST', url, form),
 };
 
+/** Message lisible d'une erreur quelconque. */
 export function errorMessage(err: unknown): string {
   if (err instanceof Error) return err.message;
   return String(err);

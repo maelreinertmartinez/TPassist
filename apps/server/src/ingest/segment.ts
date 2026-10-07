@@ -1,7 +1,12 @@
-import { UNIT_KIND_LABELS, type UnitKind } from '@tpassist/shared';
+// Assemblage des résultats de l'IA lors de l'analyse d'un PDF (fonctions pures, testées dans test/ingest.test.ts) :
+// regroupement des pages en parties et fusion des extractions faites par lots de pages.
+import { stripAccents, UNIT_KIND_LABELS, type UnitKind } from '@tpassist/shared';
+import type { CourseExtraction, ExerciseExtraction } from '../ai/schemas';
 
+/** Nature d'une page ; `autre` : page de garde, sommaire, page blanche. */
 export type PageKind = UnitKind | 'autre';
 
+/** Classement d'une page par l'IA. */
 export interface PageClass {
   page: number;
   kind: PageKind;
@@ -10,6 +15,7 @@ export interface PageClass {
   startsMidPage: boolean;
 }
 
+/** Partie contiguë du PDF (pages incluses). */
 export interface UnitSpan {
   kind: UnitKind;
   title: string;
@@ -57,36 +63,16 @@ export function mergePagesIntoUnits(pages: PageClass[]): UnitSpan[] {
   return spans.filter((s) => s.pageEnd >= s.pageStart);
 }
 
-export function chunk<T>(arr: T[], size: number): T[][] {
-  const out: T[][] = [];
-  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
-  return out;
-}
-
-export function range(start: number, end: number): number[] {
-  const out: number[] = [];
-  for (let i = start; i <= end; i++) out.push(i);
-  return out;
-}
-
 // ---------- Fusion des extractions par lots ----------
 
-export interface ExtractedQuestion {
-  label: string;
-  statementMd: string;
-  figurePages: number[];
-  dependsOnPrevious: boolean;
-  points: number | null;
-  inlineSolutionMd: string | null;
-}
+export type ExtractedExercise = ExerciseExtraction['exercises'][number];
+/** Section de cours extraite d’un lot de pages. */
+export type ExtractedSection = CourseExtraction['sections'][number];
 
-export interface ExtractedExercise {
-  title: string;
-  continuesPrevious: boolean;
-  contextMd: string;
-  questions: ExtractedQuestion[];
-}
-
+/**
+ * Fusionne les exercices extraits lot par lot : un exercice marqué « suite du précédent » est rattaché au dernier.
+ * Un exercice sans question devient une question unique (son énoncé).
+ */
 export function mergeExerciseBatches(batches: ExtractedExercise[][]): ExtractedExercise[] {
   const out: ExtractedExercise[] = [];
   for (const batch of batches) {
@@ -117,16 +103,7 @@ export function mergeExerciseBatches(batches: ExtractedExercise[][]): ExtractedE
   return out.filter((e) => e.questions.length > 0);
 }
 
-export interface ExtractedSection {
-  title: string;
-  pageStart: number;
-  pageEnd: number;
-  summary: string;
-  keyConcepts: string[];
-  contentMd: string;
-  continuesPrevious: boolean;
-}
-
+/** Fusionne les sections extraites lot par lot : une section marquée « suite de la précédente » la complète. */
 export function mergeSectionBatches(batches: ExtractedSection[][]): ExtractedSection[] {
   const out: ExtractedSection[] = [];
   for (const batch of batches) {
@@ -147,10 +124,8 @@ export function mergeSectionBatches(batches: ExtractedSection[][]): ExtractedSec
 
 /** Normalise un label de question/exercice pour la comparaison (« Q1.a) » → « 1a »). */
 export function normalizeLabel(label: string): string {
-  return label
+  return stripAccents(label)
     .toLowerCase()
-    .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
     .replace(/exercice|question|ex\.?|q(?=\d)/g, '')
     .replace(/[^a-z0-9]/g, '');
 }

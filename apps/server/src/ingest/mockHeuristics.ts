@@ -13,6 +13,7 @@ function firstLine(text: string): string {
   );
 }
 
+/** Devine le type d’une page d’après les mots de son en-tête. */
 export function classifyPageText(text: string): PageKind {
   const t = text.toLowerCase();
   const head = t.slice(0, 300);
@@ -25,6 +26,7 @@ export function classifyPageText(text: string): PageKind {
   return 'cours';
 }
 
+/** Classement simulé d’un lot de pages, à la suite de la page précédente. */
 export function mockSegmentation(pages: { page: number; text: string }[], prev: PageClass | null): PageClass[] {
   const out: PageClass[] = [];
   let last = prev;
@@ -50,6 +52,7 @@ export function mockSegmentation(pages: { page: number; text: string }[], prev: 
 const QUESTION_RE = /^\s*(?:Question\s*)?(\d+(?:\.\d+)?(?:\.?[a-z])?|[a-z])\s*[.)]\s+(.+)$/i;
 const EXERCISE_RE = /^\s*Exercice\s*(\d+)\s*[:.–-]?\s*(.*)$/i;
 
+/** Exercices et questions simulés, repérés par « Exercice » et la numérotation. */
 export function mockExtractExercises(pages: { page: number; text: string }[], kind: string): ExerciseExtraction {
   const exercises: ExerciseExtraction['exercises'] = [];
   let cur: ExerciseExtraction['exercises'][number] | null = null;
@@ -104,6 +107,7 @@ export function mockExtractExercises(pages: { page: number; text: string }[], ki
   return { durationMinutes: kind === 'ei' ? 120 : null, exercises };
 }
 
+/** Sections simulées : une par page de cours. */
 export function mockExtractCours(pages: { page: number; text: string }[]): CourseExtraction {
   return {
     sections: pages.map((p) => ({
@@ -118,6 +122,7 @@ export function mockExtractCours(pages: { page: number; text: string }[]): Cours
   };
 }
 
+/** Solutions simulées, repérées par « Exercice » et la numérotation. */
 export function mockExtractCorrige(pages: { page: number; text: string }[]): CorrigeExtraction {
   const solutions: CorrigeExtraction['solutions'] = [];
   let exLabel = 'Exercice 1';

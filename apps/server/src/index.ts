@@ -1,3 +1,4 @@
+// Démarrage du serveur : base de données, routes de l'API, front compilé et file de tâches de fond.
 import fastifyMultipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
 import Fastify from 'fastify';
@@ -5,9 +6,10 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { config, ensureDataDirs } from './config';
 import { closeDb, openDb } from './db/client';
-import { HttpError } from './db/repo';
+import { HttpError } from './errors';
 import { registerRoutes } from './http/routes';
 import { startJobWorker } from './jobs/queue';
+import { errorText } from './utils';
 // Enregistrement des gestionnaires de tâches.
 import './jobs/ingest';
 import './jobs/linkCorrections';
@@ -32,7 +34,7 @@ app.setErrorHandler((err, _req, reply) => {
   }
   const status = (err as { statusCode?: number }).statusCode ?? 500;
   if (status >= 500) app.log.error(err);
-  return reply.status(status).send({ error: err instanceof Error ? err.message : String(err) });
+  return reply.status(status).send({ error: errorText(err) });
 });
 
 await registerRoutes(app);

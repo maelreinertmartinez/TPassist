@@ -1,12 +1,13 @@
+// Onglet « Points bloquants » : liste des notions difficiles du cours, avec leur priorité et leur gestion à la main.
 import { useMutation } from '@tanstack/react-query';
 import type { WeakPointDto, WeakPointStatus } from '@tpassist/shared';
 import { CheckCheck, CheckCircle2, Flame, RotateCcw, Trash2 } from 'lucide-react';
 import { useState } from 'react';
 import { api } from '../lib/api';
 import { Markdown } from './Markdown';
-import { Button, EmptyState, Segmented, Tag, Toggle, useConfirm } from './ui';
+import { Button, EmptyState, Segmented, Tag, Toggle, useConfirm, type Tone } from './ui';
 
-const STATUS: Record<WeakPointStatus, { label: string; tone: 'yellow' | 'green' | 'grey' }> = {
+const STATUS: Record<WeakPointStatus, { label: string; tone: Tone }> = {
   active: { label: 'À travailler', tone: 'yellow' },
   mastered: { label: 'Maîtrisé', tone: 'green' },
   resolved: { label: 'Résolu', tone: 'grey' },
@@ -16,6 +17,7 @@ function priorityLabel(p: number) {
   return p >= 70 ? 'priorité haute' : p >= 40 ? 'priorité moyenne' : 'priorité basse';
 }
 
+/** @param onChange appelé après chaque modification (pour recharger la page du cours) */
 export function WeakPointsPanel({ points, onChange }: { points: WeakPointDto[]; onChange: () => void }) {
   const confirm = useConfirm();
   const [filter, setFilter] = useState<'active' | 'all'>('active');

@@ -1,5 +1,8 @@
-import { and, eq, inArray, isNull } from 'drizzle-orm';
-import { UNIT_KIND_LABELS, type UnitKind } from '@tpassist/shared';
+// Tâche « ingest » : analyse d'un PDF. Chaque page est classée par l'IA (cours, TD, TP, EI, corrigé), les pages
+// contiguës sont regroupées en parties, puis chaque partie est transcrite par lots de pages (sections de cours,
+// exercices et questions, ou solutions d'un corrigé). Les corrigés sont ensuite rattachés à leur sujet.
+import { eq } from 'drizzle-orm';
+import { PLAYABLE_KINDS, UNIT_KIND_LABELS } from '@tpassist/shared';
 import { runAgent, type ContentBlock } from '../ai/agent';
 import { PROMPTS } from '../ai/prompts';
 import {
@@ -10,25 +13,19 @@ import {
   type CorrigeExtraction,
 } from '../ai/schemas';
 import { db, newId } from '../db/client';
-import { deleteUnits, insertExercises, insertSection, nextUnitOrder } from '../db/repo';
+import { courseUnits, deleteUnits, insertExercises, insertSection, nextOrder } from '../db/repo';
 import { documents, units } from '../db/schema';
 import { classifyPageText, mockExtractCorrige, mockExtractCours, mockExtractExercises, mockSegmentation } from '../ingest/mockHeuristics';
-import {
-  chunk,
-  mergeExerciseBatches,
-  mergePagesIntoUnits,
-  mergeSectionBatches,
-  range,
-  type ExtractedExercise,
-  type ExtractedSection,
-  type PageClass,
-  type UnitSpan,
-} from '../ingest/segment';
+import { mergeExerciseBatches, mergePagesIntoUnits, mergeSectionBatches, type ExtractedExercise, type ExtractedSection, type PageClass, type UnitSpan } from '../ingest/segment';
 import { pdfPageCount, pdfPagesText, readPageBase64, renderPages } from '../pdf/render';
+import { chunk, errorText, range } from '../utils';
 import { enqueueJob, hasPendingJob, registerJobHandler, type JobContext, type JobRow } from './queue';
 
+/** Pages classées par appel (miniatures). */
 const SEGMENT_BATCH = 20;
+/** Pages transcrites par appel (pleine résolution). */
 const EXTRACT_BATCH = 12;
+/** Longueur maximale de la couche texte envoyée pour une page. */
 const PAGE_TEXT_LIMIT = 3500;
 
 function pageText(texts: string[], page: number) {
@@ -185,7 +182,7 @@ async function ingest(job: JobRow, ctx: JobContext) {
     const old = db.select({ id: units.id }).from(units).where(eq(units.documentId, documentId)).all();
     deleteUnits(old.map((u) => u.id));
 
-    let order = nextUnitOrder(doc.courseId);
+    let order = nextOrder(units.order, eq(units.courseId, doc.courseId));
     for (const [i, span] of spans.entries()) {
       ctx.progress(0.4 + (0.55 * i) / spans.length, `Extraction : ${span.title} (${UNIT_KIND_LABELS[span.kind]}, p. ${span.pageStart}–${span.pageEnd})…`);
       const unitId = newId();
@@ -193,7 +190,7 @@ async function ingest(job: JobRow, ctx: JobContext) {
         id: unitId,
         courseId: doc.courseId,
         documentId,
-        kind: span.kind as UnitKind,
+        kind: span.kind,
         title: span.title,
         order: order++,
         pageStart: span.pageStart,
@@ -230,27 +227,17 @@ async function ingest(job: JobRow, ctx: JobContext) {
     maybeEnqueueLinkCorrections(doc.courseId);
   } catch (err) {
     db.update(documents)
-      .set({ status: 'error', error: err instanceof Error ? err.message : String(err) })
+      .set({ status: 'error', error: errorText(err) })
       .where(eq(documents.id, documentId))
       .run();
     throw err;
   }
 }
 
-/** Lance le rattachement s'il existe des corrigés non rattachés et des sujets candidats. */
-export function maybeEnqueueLinkCorrections(courseId: string) {
-  const pending = db
-    .select({ id: units.id })
-    .from(units)
-    .where(and(eq(units.courseId, courseId), eq(units.kind, 'corrige'), isNull(units.correctsUnitId)))
-    .all();
-  if (pending.length === 0) return;
-  const targets = db
-    .select({ id: units.id })
-    .from(units)
-    .where(and(eq(units.courseId, courseId), inArray(units.kind, ['td', 'tp', 'ei'])))
-    .all();
-  if (targets.length === 0) return;
+/** Lance le rattachement s'il existe des corrigés non rattachés et des sujets candidats (une seule tâche à la fois). */
+function maybeEnqueueLinkCorrections(courseId: string) {
+  const pending = courseUnits(courseId, ['corrige']).some((u) => !u.correctsUnitId);
+  if (!pending || courseUnits(courseId, PLAYABLE_KINDS).length === 0) return;
   if (hasPendingJob('link_corrections', { courseId })) return;
   enqueueJob({ type: 'link_corrections', courseId, refId: courseId });
 }

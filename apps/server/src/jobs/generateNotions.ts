@@ -1,16 +1,20 @@
-import { and, asc, eq } from 'drizzle-orm';
+// Tâche « notions » : construit la carte des notions d'un cours, un appel IA par chapitre (dans l'ordre du cours,
+// pour que les prérequis puissent viser les chapitres précédents), puis remplace l'ancienne carte d'un coup.
+import { asc, eq } from 'drizzle-orm';
 import type { NotionKind } from '@tpassist/shared';
 import { runAgent } from '../ai/agent';
 import { PROMPTS } from '../ai/prompts';
 import { NotionMapSchema, type NotionMap } from '../ai/schemas';
 import { db, newId } from '../db/client';
-import { courseSections, courses, notions, units } from '../db/schema';
-import { normalizeLabel, sectionsSignature } from '../services/notions';
+import { courseSections, courses, notions } from '../db/schema';
+import { courseUnits } from '../db/repo';
+import { normalizeText, sectionsSignature } from '../services/notions';
 import { registerJobHandler, type JobContext, type JobRow } from './queue';
 
 type RawNotion = NotionMap['notions'][number];
 type Section = typeof courseSections.$inferSelect;
 
+/** Notion validée, avec des références vérifiées. */
 export interface CleanNotion {
   key: string;
   title: string;
@@ -26,7 +30,7 @@ const SECTION_LIMIT = 4000;
 const CHAPTER_LIMIT = 40000;
 
 function slug(s: string) {
-  return normalizeLabel(s).replace(/ /g, '-').slice(0, 48) || 'notion';
+  return normalizeText(s).replace(/ /g, '-').slice(0, 48) || 'notion';
 }
 
 /**
@@ -72,7 +76,7 @@ export function sanitizeNotions(raw: RawNotion[], validSectionIds: Set<string>, 
 }
 
 function guessKind(label: string): NotionKind {
-  const t = normalizeLabel(label);
+  const t = normalizeText(label);
   if (/\b(theoreme|lemme|corollaire)\b/.test(t)) return 'theoreme';
   if (/\b(definition)\b/.test(t)) return 'definition';
   if (/\b(methode|algorithme)\b/.test(t)) return 'methode';
@@ -118,14 +122,10 @@ function chapterContent(chapter: { title: string }, sections: Section[], known: 
   ].join('\n\n');
 }
 
+/** Génère et enregistre la carte des notions d’un cours (gestionnaire de la tâche « notions »). */
 export async function generateNotions(job: JobRow, ctx: JobContext) {
   const courseId = job.courseId!;
-  const chapters = db
-    .select()
-    .from(units)
-    .where(and(eq(units.courseId, courseId), eq(units.kind, 'cours')))
-    .orderBy(asc(units.order))
-    .all();
+  const chapters = courseUnits(courseId, ['cours']);
   const sections = db.select().from(courseSections).where(eq(courseSections.courseId, courseId)).orderBy(asc(courseSections.order)).all();
   const withSections = chapters.filter((c) => sections.some((s) => s.unitId === c.id));
   if (withSections.length === 0) throw new Error('Aucun chapitre de cours à analyser.');
@@ -182,12 +182,12 @@ export async function generateNotions(job: JobRow, ctx: JobContext) {
         .where(eq(notions.courseId, courseId))
         .all()
         .filter((o) => o.detailMd)
-        .map((o) => [`${o.unitId}|${normalizeLabel(o.title)}`, o.detailMd]),
+        .map((o) => [`${o.unitId}|${normalizeText(o.title)}`, o.detailMd]),
     );
     tx.delete(notions).where(eq(notions.courseId, courseId)).run();
     for (const row of rows) {
       tx.insert(notions)
-        .values({ ...row, detailMd: kept.get(`${row.unitId}|${normalizeLabel(row.title)}`) ?? null })
+        .values({ ...row, detailMd: kept.get(`${row.unitId}|${normalizeText(row.title)}`) ?? null })
         .run();
     }
     tx.update(courses).set({ notionsSignature: signature, notionsGeneratedAt: Date.now() }).where(eq(courses.id, courseId)).run();

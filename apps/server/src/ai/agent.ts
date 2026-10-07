@@ -1,3 +1,7 @@
+// Point d'entrée unique vers l'IA (Claude Agent SDK) : un appel = une requête, sans outils de fichiers ni
+// de terminal, avec au besoin les outils de lecture du cours (MCP) et une sortie structurée validée par Zod.
+// Chaque appel est journalisé (coût, jetons, durée) pour la page Statistiques. En mode simulation
+// (TPASSIST_AI_MOCK=1), la fonction `mock` de l'appel répond à la place de l'IA.
 import {
   query,
   type EffortLevel,
@@ -11,11 +15,15 @@ import { z } from 'zod';
 import { config, modelFor, type TaskKind } from '../config';
 import { db, newId } from '../db/client';
 import { aiCalls } from '../db/schema';
+import { errorText } from '../utils';
 
+/** Types d'images acceptés par l'API. */
 export type ImageMediaType = 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif';
 
+/** Morceau du message envoyé à l'IA : texte ou image en base64. */
 export type ContentBlock = { type: 'text'; text: string } | { type: 'image'; mediaType: ImageMediaType; data: string };
 
+/** Paramètres d'un appel à l'IA. */
 export interface RunAgentOptions<T> {
   /** Nom de la tâche (journal de consommation). */
   task: string;
@@ -30,7 +38,6 @@ export interface RunAgentOptions<T> {
   maxTurns?: number;
   /** Diffusion du texte au fil de l'eau. */
   onText?: (delta: string) => void;
-  signal?: AbortSignal;
   /** Conversation persistée (chat) : reprise d'une session SDK. */
   persist?: boolean;
   resume?: string;
@@ -38,6 +45,7 @@ export interface RunAgentOptions<T> {
   mock: () => T | Promise<T>;
 }
 
+/** Résultat d'un appel : données validées, texte final et session SDK (pour reprendre une conversation). */
 export interface AgentResult<T> {
   data: T;
   text: string;
@@ -45,6 +53,7 @@ export interface AgentResult<T> {
   costUsd: number;
 }
 
+/** Échec d'un appel à l'IA : `message` est lisible par l'étudiant, `detail` garde l'erreur technique. */
 export class AiError extends Error {
   constructor(
     message: string,
@@ -57,10 +66,15 @@ export class AiError extends Error {
 
 const limit = pLimit(config.aiConcurrency);
 
+/**
+ * Appelle l'IA (au plus TPASSIST_AI_CONCURRENCY appels simultanés).
+ * @throws AiError si l'appel échoue ou si la sortie structurée est invalide
+ */
 export function runAgent<T = string>(opts: RunAgentOptions<T>): Promise<AgentResult<T>> {
   return limit(() => (config.aiMock ? runMock(opts) : runReal(opts)));
 }
 
+/** Schéma Zod converti en JSON Schema (draft 7), le format attendu par l'API. */
 export function toJsonSchema(schema: z.ZodType): Record<string, unknown> {
   return z.toJSONSchema(schema, { target: 'draft-7' }) as Record<string, unknown>;
 }
@@ -85,9 +99,8 @@ function buildPrompt(content: string | ContentBlock[]): string | AsyncIterable<S
 async function runReal<T>(opts: RunAgentOptions<T>): Promise<AgentResult<T>> {
   const model = modelFor(opts.kind);
   const started = Date.now();
+  // Sert à couper court aux erreurs définitives (identifiants invalides…) que le SDK réessaierait longtemps.
   const abort = new AbortController();
-  const onAbort = () => abort.abort();
-  opts.signal?.addEventListener('abort', onAbort, { once: true });
 
   const options: Options = {
     model,
@@ -150,8 +163,6 @@ async function runReal<T>(opts: RunAgentOptions<T>): Promise<AgentResult<T>> {
     }
   } catch (err) {
     thrown = err;
-  } finally {
-    opts.signal?.removeEventListener('abort', onAbort);
   }
 
   const durationMs = Date.now() - started;
@@ -176,10 +187,6 @@ async function runReal<T>(opts: RunAgentOptions<T>): Promise<AgentResult<T>> {
   if (fatal) {
     logCall(false, fatal);
     throw new AiError(humanizeError(fatal), fatal);
-  }
-  if (abort.signal.aborted && !result) {
-    logCall(false, 'aborted');
-    throw new AiError('Requête annulée.');
   }
 
   if (!result || result.subtype !== 'success' || result.is_error) {
@@ -267,7 +274,6 @@ async function runMock<T>(opts: RunAgentOptions<T>): Promise<AgentResult<T>> {
     // Simule une diffusion progressive.
     const chunks = data.match(/.{1,24}/gs) ?? [];
     for (const c of chunks) {
-      if (opts.signal?.aborted) break;
       opts.onText(c);
       await new Promise((r) => setTimeout(r, 8));
     }
@@ -280,12 +286,14 @@ async function runMock<T>(opts: RunAgentOptions<T>): Promise<AgentResult<T>> {
 
 // ---------- Santé ----------
 
+/** Identifiant Claude configuré dans l'environnement. */
 export function authSource(): 'api_key' | 'oauth_token' | 'none' {
   if (process.env.ANTHROPIC_API_KEY) return 'api_key';
   if (process.env.CLAUDE_CODE_OAUTH_TOKEN) return 'oauth_token';
   return 'none';
 }
 
+/** Teste la connexion à l'IA avec un appel minimal. */
 export async function pingAi(): Promise<{ ok: boolean; message: string }> {
   if (config.aiMock) return { ok: true, message: 'Mode simulation (TPASSIST_AI_MOCK=1) : aucune requête réelle.' };
   if (authSource() === 'none') {
@@ -303,6 +311,6 @@ export async function pingAi(): Promise<{ ok: boolean; message: string }> {
     });
     return { ok: true, message: `Connexion OK (${r.text.trim().slice(0, 40)})` };
   } catch (err) {
-    return { ok: false, message: err instanceof Error ? err.message : String(err) };
+    return { ok: false, message: errorText(err) };
   }
 }

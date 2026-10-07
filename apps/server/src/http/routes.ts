@@ -1,44 +1,61 @@
-import type { FastifyInstance } from 'fastify';
+// Routes HTTP de l'API : elles lisent la requête, valident ce qui doit l'être et délèguent aux services.
+// Aucune règle métier ici ; les erreurs levées par les services (HttpError) sont traduites par src/index.ts.
+import type { FastifyInstance, FastifyReply } from 'fastify';
 import { createReadStream, existsSync } from 'node:fs';
-import { desc, eq } from 'drizzle-orm';
-import type { AiHealth, AiUsageStats, HelpKind, SessionMode, SubmitAttemptBody, UnitKind } from '@tpassist/shared';
+import { eq } from 'drizzle-orm';
+import { HELP_KINDS, type AiHealth, type HelpKind, type SessionMode, type SubmitAttemptBody, type UnitKind, type WeakPointStatus } from '@tpassist/shared';
 import { authSource, pingAi } from '../ai/agent';
 import { config } from '../config';
 import { db } from '../db/client';
-import { HttpError, notFound } from '../db/repo';
-import { attempts, documents, jobs, reports } from '../db/schema';
-import { usageStats } from '../services/usage';
-import { enqueueJob, retryJob } from '../jobs/queue';
+import { findById } from '../db/repo';
+import { attempts, documents } from '../db/schema';
+import { HttpError, notFound } from '../errors';
+import { enqueueJob, jobDto, retryJob } from '../jobs/queue';
 import { pageImagePath } from '../pdf/render';
 import * as chat from '../services/chat';
 import * as coursesSvc from '../services/courses';
+import * as documentsSvc from '../services/documents';
 import * as editor from '../services/editor';
+import { imageMediaType } from '../services/images';
 import * as notionsSvc from '../services/notions';
 import * as quiz from '../services/quiz';
+import * as reportsSvc from '../services/reports';
 import * as sessionsSvc from '../services/sessions';
-import { setWeakPointStatus } from '../services/weakPoints';
-import { weakPoints } from '../db/schema';
+import { usageStats } from '../services/usage';
+import { deleteWeakPoint, setWeakPointStatus } from '../services/weakPoints';
 import { streamSse } from './sse';
 
 type Params = Record<string, string>;
 
+/** Le résultat du test de connexion à l'IA est gardé 10 minutes (sauf demande explicite de revérification). */
+const HEALTH_TTL_MS = 10 * 60 * 1000;
+const WEAK_POINT_STATUSES: WeakPointStatus[] = ['active', 'mastered', 'resolved'];
+const OK = { ok: true } as const;
+
 let healthCache: AiHealth | null = null;
 
+/** Envoie un fichier du disque ; 404 « <label> introuvable » s'il n'existe pas. */
+function sendFile(reply: FastifyReply, path: string | null | undefined, type: string, label: string) {
+  if (!path || !existsSync(path)) notFound(label);
+  return reply.type(type).send(createReadStream(path));
+}
+
+/** Enregistre toutes les routes de l'API sur l'application Fastify. */
 export async function registerRoutes(app: FastifyInstance) {
   // ---------- Santé / consommation ----------
 
-  app.get('/api/health', async () => ({ ok: true }));
+  /** Utilisée par le contrôle de santé Docker. */
+  app.get('/api/health', async () => OK);
 
   app.get<{ Querystring: { refresh?: string } }>('/api/health/ai', async (req) => {
-    const fresh = req.query.refresh === '1';
-    if (healthCache && !fresh && Date.now() - healthCache.checkedAt < 10 * 60 * 1000) return healthCache;
+    if (healthCache && req.query.refresh !== '1' && Date.now() - healthCache.checkedAt < HEALTH_TTL_MS) return healthCache;
     const r = await pingAi();
     healthCache = { ok: r.ok, message: r.message, mock: config.aiMock, model: config.model, authSource: authSource(), checkedAt: Date.now() };
     return healthCache;
   });
 
-  /** Statistiques d'utilisation de l'IA. `from` : début de période (ms, 0 = tout) ; `tz` : Date#getTimezoneOffset du navigateur. */
-  app.get<{ Querystring: { from?: string; tz?: string } }>('/api/usage/stats', async (req): Promise<AiUsageStats> => {
+  /** `from` : début de période (ms, 0 = tout) ; `tz` : Date#getTimezoneOffset du navigateur. */
+  app.get<{ Querystring: { from?: string; tz?: string } }>('/api/usage/stats', async (req) => {
     const from = Number(req.query.from ?? 0);
     const tz = Number(req.query.tz ?? 0);
     if (!Number.isFinite(from) || !Number.isFinite(tz) || Math.abs(tz) > 14 * 60) throw new HttpError(400, 'Paramètres invalides.');
@@ -55,15 +72,14 @@ export async function registerRoutes(app: FastifyInstance) {
   app.patch<{ Params: Params; Body: { name?: string; color?: string; icon?: string } }>('/api/courses/:id', async (req) => coursesSvc.updateCourse(req.params.id, req.body ?? {}));
   app.delete<{ Params: Params }>('/api/courses/:id', async (req) => {
     await coursesSvc.deleteCourse(req.params.id);
-    return { ok: true };
+    return OK;
   });
 
-  // Ajout de fichiers (multipart, plusieurs PDF).
+  /** Ajout de fichiers (multipart, plusieurs PDF). */
   app.post<{ Params: Params }>('/api/courses/:id/documents', async (req) => {
     const created = [];
     for await (const part of req.files()) {
-      const buf = await part.toBuffer();
-      created.push(await coursesSvc.addDocument(req.params.id, part.filename || 'document.pdf', buf));
+      created.push(await documentsSvc.addDocument(req.params.id, part.filename || 'document.pdf', await part.toBuffer()));
     }
     if (created.length === 0) throw new HttpError(400, 'Aucun fichier reçu.');
     return created;
@@ -73,15 +89,16 @@ export async function registerRoutes(app: FastifyInstance) {
     quiz.createCourseQuiz(req.params.id, (req.body?.size as quiz.CourseQuizSize) ?? 'court'),
   );
 
-  app.post<{ Params: Params; Body: { difficulty?: string; sectionIds?: string[] } }>('/api/courses/:id/generate-ei', async (req) => {
-    const job = enqueueJob({
-      type: 'generate_ei',
-      courseId: req.params.id,
-      refId: req.params.id,
-      payload: { difficulty: req.body?.difficulty ?? 'standard', sectionIds: req.body?.sectionIds ?? [] },
-    });
-    return coursesSvc.jobDto(job);
-  });
+  app.post<{ Params: Params; Body: { difficulty?: string; sectionIds?: string[] } }>('/api/courses/:id/generate-ei', async (req) =>
+    jobDto(
+      enqueueJob({
+        type: 'generate_ei',
+        courseId: req.params.id,
+        refId: req.params.id,
+        payload: { difficulty: req.body?.difficulty ?? 'standard', sectionIds: req.body?.sectionIds ?? [] },
+      }),
+    ),
+  );
 
   app.get<{ Params: Params }>('/api/courses/:id/notions', async (req) => notionsSvc.getNotionMap(req.params.id));
   app.post<{ Params: Params }>('/api/courses/:id/notions/generate', async (req) => notionsSvc.requestNotionMap(req.params.id));
@@ -89,44 +106,32 @@ export async function registerRoutes(app: FastifyInstance) {
   app.post<{ Params: Params; Body: { refresh?: boolean } }>('/api/notions/:id/detail', async (req, reply) => {
     await streamSse(reply, (onText) => notionsSvc.streamNotionDetail(req.params.id, Boolean(req.body?.refresh), onText));
   });
-  app.get<{ Params: Params }>('/api/courses/:id/chat', async (req) => {
-    const t = chat.getOrCreateThread('course', req.params.id);
-    return chat.getThread(t.id);
-  });
+
+  app.get<{ Params: Params }>('/api/courses/:id/chat', async (req) => chat.courseThread(req.params.id));
 
   // ---------- Documents ----------
 
   app.get<{ Params: Params }>('/api/documents/:id/file', async (req, reply) => {
-    const doc = db.select().from(documents).where(eq(documents.id, req.params.id)).get() ?? notFound('Document');
-    reply.type('application/pdf').header('Content-Disposition', `inline; filename="${encodeURIComponent(doc.filename)}"`);
-    return reply.send(createReadStream(doc.path));
+    const doc = findById(documents, req.params.id, 'Document');
+    reply.header('Content-Disposition', `inline; filename="${encodeURIComponent(doc.filename)}"`);
+    return sendFile(reply, doc.path, 'application/pdf', 'Document');
   });
-
   app.get<{ Params: Params }>('/api/documents/:id/pages/:page', async (req, reply) => {
     const page = Number.parseInt(req.params.page, 10);
-    const path = pageImagePath(req.params.id, page, 'full');
-    if (!Number.isFinite(page) || !existsSync(path)) notFound('Page');
-    reply.type('image/png').header('Cache-Control', 'public, max-age=86400');
-    return reply.send(createReadStream(path));
+    if (!Number.isFinite(page)) notFound('Page');
+    reply.header('Cache-Control', 'public, max-age=86400');
+    return sendFile(reply, pageImagePath(req.params.id, page, 'full'), 'image/png', 'Page');
   });
-
-  app.get<{ Params: Params }>('/api/documents/:id/sessions-count', async (req) => ({ count: coursesSvc.documentSessionsCount(req.params.id) }));
-  app.post<{ Params: Params }>('/api/documents/:id/reanalyze', async (req) => coursesSvc.reanalyzeDocument(req.params.id));
+  app.get<{ Params: Params }>('/api/documents/:id/sessions-count', async (req) => ({ count: documentsSvc.documentSessionsCount(req.params.id) }));
+  app.post<{ Params: Params }>('/api/documents/:id/reanalyze', async (req) => documentsSvc.reanalyzeDocument(req.params.id));
   app.delete<{ Params: Params }>('/api/documents/:id', async (req) => {
-    await coursesSvc.deleteDocument(req.params.id);
-    return { ok: true };
+    await documentsSvc.deleteDocument(req.params.id);
+    return OK;
   });
 
-  // ---------- Jobs ----------
+  // ---------- Tâches ----------
 
-  app.get<{ Params: Params }>('/api/jobs/:id', async (req) => {
-    const j = db.select().from(jobs).where(eq(jobs.id, req.params.id)).get() ?? notFound('Tâche');
-    return coursesSvc.jobDto(j);
-  });
-  app.post<{ Params: Params }>('/api/jobs/:id/retry', async (req) => {
-    const j = retryJob(req.params.id) ?? notFound('Tâche en erreur');
-    return coursesSvc.jobDto(j);
-  });
+  app.post<{ Params: Params }>('/api/jobs/:id/retry', async (req) => jobDto(retryJob(req.params.id) ?? notFound('Tâche en erreur')));
 
   // ---------- Éditeur ----------
 
@@ -137,7 +142,7 @@ export async function registerRoutes(app: FastifyInstance) {
   );
   app.delete<{ Params: Params }>('/api/units/:id', async (req) => {
     editor.deleteUnit(req.params.id);
-    return { ok: true };
+    return OK;
   });
   app.post<{ Params: Params; Body: { sourceId: string } }>('/api/units/:id/merge', async (req) => editor.mergeUnits(req.params.id, req.body.sourceId));
   app.post<{ Params: Params }>('/api/units/:id/exercises', async (req) => editor.addExercise(req.params.id));
@@ -152,7 +157,7 @@ export async function registerRoutes(app: FastifyInstance) {
   app.delete<{ Params: Params }>('/api/questions/:id', async (req) => editor.deleteQuestion(req.params.id));
   app.patch<{ Params: Params; Body: { title?: string; summary?: string; contentMd?: string } }>('/api/sections/:id', async (req) => editor.updateSection(req.params.id, req.body ?? {}));
 
-  // ---------- Sessions ----------
+  // ---------- Séances ----------
 
   app.post<{ Params: Params; Body: { mode?: SessionMode; timeLimitMinutes?: number | null } }>('/api/units/:id/sessions', async (req) => {
     const minutes = req.body?.timeLimitMinutes;
@@ -160,16 +165,12 @@ export async function registerRoutes(app: FastifyInstance) {
     return { id: s.id };
   });
   app.get<{ Params: Params }>('/api/sessions/:id', async (req) => sessionsSvc.getSessionState(req.params.id));
-  app.delete<{ Params: Params }>('/api/sessions/:id', async (req) => {
-    sessionsSvc.deleteSession(req.params.id);
-    return { ok: true };
-  });
   app.post<{ Params: Params; Body: { questionId: string | null; visible: boolean } }>('/api/sessions/:id/heartbeat', async (req) =>
     sessionsSvc.heartbeat(req.params.id, req.body?.questionId ?? null, Boolean(req.body?.visible)),
   );
   app.post<{ Params: Params; Body: { questionId: string; kind: HelpKind } }>('/api/sessions/:id/help', async (req, reply) => {
     const { questionId, kind } = req.body ?? ({} as { questionId: string; kind: HelpKind });
-    if (!['reformulation', 'course_refs', 'hint', 'solution'].includes(kind)) throw new HttpError(400, 'Aide inconnue.');
+    if (!HELP_KINDS.includes(kind)) throw new HttpError(400, 'Aide inconnue.');
     await streamSse(reply, (onText) => sessionsSvc.requestHelp(req.params.id, questionId, kind, onText));
   });
   app.post<{ Params: Params; Body: SubmitAttemptBody }>('/api/sessions/:id/attempts', async (req) => sessionsSvc.submitAttempt(req.params.id, req.body));
@@ -185,33 +186,16 @@ export async function registerRoutes(app: FastifyInstance) {
     sessionsSvc.finishSession(req.params.id);
     return sessionsSvc.getSessionState(req.params.id);
   });
-  app.get<{ Params: Params }>('/api/sessions/:id/report', async (req) => {
-    const r = coursesSvc.latestReportForSession(req.params.id) ?? notFound('Bilan');
-    return coursesSvc.getReport(r.id);
-  });
-  app.post<{ Params: Params }>('/api/sessions/:id/report/retry', async (req) => {
-    const s = sessionsSvc.loadSession(req.params.id);
-    const r = coursesSvc.latestReportForSession(s.id);
-    if (r?.status !== 'error') throw new HttpError(409, 'Le bilan n’est pas en erreur.');
-    enqueueJob({ type: 'report', courseId: s.courseId, refId: s.id });
-    db.update(reports).set({ status: 'pending', error: null }).where(eq(reports.id, r.id)).run();
-    return coursesSvc.getReport(r.id);
-  });
+  app.post<{ Params: Params }>('/api/sessions/:id/report/retry', async (req) => reportsSvc.retryReport(req.params.id));
   app.post<{ Params: Params }>('/api/sessions/:id/review-quiz', async (req) => quiz.createReviewQuiz(req.params.id));
-  app.get<{ Params: Params }>('/api/sessions/:id/chat', async (req) => {
-    const s = sessionsSvc.loadSession(req.params.id);
-    const t = chat.getOrCreateThread('session', s.courseId, s.id);
-    return chat.getThread(t.id);
-  });
+  app.get<{ Params: Params }>('/api/sessions/:id/chat', async (req) => chat.sessionThread(req.params.id));
 
   app.get<{ Params: Params }>('/api/attempts/:id/image', async (req, reply) => {
-    const a = db.select({ p: attempts.imagePath }).from(attempts).where(eq(attempts.id, req.params.id)).get();
-    if (!a?.p || !existsSync(a.p)) notFound('Image');
-    reply.type(a.p.endsWith('.png') ? 'image/png' : 'image/jpeg');
-    return reply.send(createReadStream(a.p));
+    const path = db.select({ p: attempts.imagePath }).from(attempts).where(eq(attempts.id, req.params.id)).get()?.p;
+    return sendFile(reply, path, imageMediaType(path ?? ''), 'Image');
   });
 
-  app.get<{ Params: Params }>('/api/reports/:id', async (req) => coursesSvc.getReport(req.params.id));
+  app.get<{ Params: Params }>('/api/reports/:id', async (req) => reportsSvc.getReport(req.params.id));
 
   // ---------- Quiz ----------
 
@@ -221,35 +205,26 @@ export async function registerRoutes(app: FastifyInstance) {
   );
   app.post<{ Params: Params }>('/api/quizzes/:id/restart', async (req) => quiz.restartQuiz(req.params.id));
   app.post<{ Params: Params }>('/api/quizzes/:id/retry', async (req) => quiz.retryQuizGeneration(req.params.id));
-  app.delete<{ Params: Params }>('/api/quizzes/:id', async (req) => {
-    quiz.deleteQuiz(req.params.id);
-    return { ok: true };
-  });
 
   // ---------- Points bloquants ----------
 
-  app.patch<{ Params: Params; Body: { status: 'active' | 'mastered' | 'resolved' } }>('/api/weak-points/:id', async (req) => {
-    if (!['active', 'mastered', 'resolved'].includes(req.body?.status)) throw new HttpError(400, 'Statut invalide.');
+  app.patch<{ Params: Params; Body: { status: WeakPointStatus } }>('/api/weak-points/:id', async (req) => {
+    if (!WEAK_POINT_STATUSES.includes(req.body?.status)) throw new HttpError(400, 'Statut invalide.');
     setWeakPointStatus(req.params.id, req.body.status);
-    return { ok: true };
+    return OK;
   });
   app.delete<{ Params: Params }>('/api/weak-points/:id', async (req) => {
-    db.delete(weakPoints).where(eq(weakPoints.id, req.params.id)).run();
-    return { ok: true };
+    deleteWeakPoint(req.params.id);
+    return OK;
   });
 
   // ---------- Chat ----------
 
-  app.get<{ Params: Params }>('/api/chat/threads/:id', async (req) => chat.getThread(req.params.id));
   app.post<{ Params: Params; Body: { text: string; imageDataUrl?: string | null } }>('/api/chat/threads/:id/messages', async (req, reply) => {
     await streamSse(reply, (onText) => chat.sendMessage(req.params.id, req.body ?? { text: '' }, onText));
   });
   app.get<{ Params: Params }>('/api/chat/messages/:id/image', async (req, reply) => {
-    const p = chat.chatImagePath(req.params.id);
-    if (!p || !existsSync(p)) notFound('Image');
-    reply.type(p.endsWith('.png') ? 'image/png' : 'image/jpeg');
-    return reply.send(createReadStream(p));
+    const path = chat.chatImagePath(req.params.id);
+    return sendFile(reply, path, imageMediaType(path ?? ''), 'Image');
   });
-
-  void desc;
 }

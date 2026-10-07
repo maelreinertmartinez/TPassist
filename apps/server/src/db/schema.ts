@@ -1,3 +1,5 @@
+// Schéma de la base SQLite (Drizzle). Les migrations sont générées par `npm run db:generate`.
+// Les champs JSON sont typés avec les types partagés (@tpassist/shared).
 import { sql } from 'drizzle-orm';
 import { index, integer, primaryKey, real, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 import type {
@@ -13,10 +15,13 @@ import type {
   QuizItemType,
   QuizKind,
   QuizStatus,
+  ReportStatus,
   SessionMode,
   SessionStatus,
+  SolutionSource,
   UnitKind,
   UnitMeta,
+  UnitOrigin,
   Verdict,
   WeakPointStatus,
   CourseRef,
@@ -28,6 +33,7 @@ const id = () => text('id').primaryKey();
 const createdAt = () => integer('created_at').notNull().default(now);
 const updatedAt = () => integer('updated_at').notNull().default(now);
 
+/** Cours (module) : regroupe les documents, les parties et le suivi de l’étudiant. */
 export const courses = sqliteTable('courses', {
   id: id(),
   name: text('name').notNull(),
@@ -41,6 +47,7 @@ export const courses = sqliteTable('courses', {
   updatedAt: updatedAt(),
 });
 
+/** PDF importés, avec le texte de chaque page. */
 export const documents = sqliteTable(
   'documents',
   {
@@ -60,6 +67,7 @@ export const documents = sqliteTable(
   (t) => [index('documents_course_idx').on(t.courseId)],
 );
 
+/** Parties détectées dans les PDF (chapitre, TD, TP, EI, corrigé) ou EI générées. */
 export const units = sqliteTable(
   'units',
   {
@@ -73,7 +81,7 @@ export const units = sqliteTable(
     order: integer('order').notNull().default(0),
     pageStart: integer('page_start'),
     pageEnd: integer('page_end'),
-    origin: text('origin').$type<'imported' | 'generated'>().notNull().default('imported'),
+    origin: text('origin').$type<UnitOrigin>().notNull().default('imported'),
     correctsUnitId: text('corrects_unit_id'),
     meta: text('meta', { mode: 'json' }).$type<UnitMeta>().notNull().default({}),
     createdAt: createdAt(),
@@ -81,6 +89,7 @@ export const units = sqliteTable(
   (t) => [index('units_course_idx').on(t.courseId), index('units_document_idx').on(t.documentId)],
 );
 
+/** Sections des chapitres de cours (contenu transcrit en Markdown). */
 export const courseSections = sqliteTable(
   'course_sections',
   {
@@ -102,6 +111,7 @@ export const courseSections = sqliteTable(
   (t) => [index('sections_unit_idx').on(t.unitId), index('sections_course_idx').on(t.courseId)],
 );
 
+/** Carte des notions d’un cours. */
 export const notions = sqliteTable(
   'notions',
   {
@@ -126,6 +136,7 @@ export const notions = sqliteTable(
   (t) => [index('notions_course_idx').on(t.courseId)],
 );
 
+/** Exercices d’un TD, TP ou EI. */
 export const exercises = sqliteTable(
   'exercises',
   {
@@ -140,6 +151,7 @@ export const exercises = sqliteTable(
   (t) => [index('exercises_unit_idx').on(t.unitId)],
 );
 
+/** Questions d’un exercice, avec le corrigé officiel s’il existe. */
 export const questions = sqliteTable(
   'questions',
   {
@@ -166,6 +178,7 @@ export const questions = sqliteTable(
   (t) => [index('questions_unit_idx').on(t.unitId), index('questions_exercise_idx').on(t.exerciseId)],
 );
 
+/** Aides générées par l’IA pour une question, réutilisées par toutes les séances. */
 export const questionAiCache = sqliteTable(
   'question_ai_cache',
   {
@@ -174,12 +187,13 @@ export const questionAiCache = sqliteTable(
       .references(() => questions.id, { onDelete: 'cascade' }),
     kind: text('kind').$type<HelpKind>().notNull(),
     contentMd: text('content_md').notNull().default(''),
-    data: text('data', { mode: 'json' }).$type<{ courseRefs?: CourseRef[]; source?: 'official' | 'ai' }>(),
+    data: text('data', { mode: 'json' }).$type<{ courseRefs?: CourseRef[]; source?: SolutionSource }>(),
     createdAt: createdAt(),
   },
   (t) => [primaryKey({ columns: [t.questionId, t.kind] })],
 );
 
+/** Séances de TD, TP ou EI. */
 export const sessions = sqliteTable(
   'sessions',
   {
@@ -205,6 +219,7 @@ export const sessions = sqliteTable(
   (t) => [index('sessions_course_idx').on(t.courseId)],
 );
 
+/** Suivi de chaque question dans une séance (temps actif, jalons des aides, statut). */
 export const sessionQuestions = sqliteTable(
   'session_questions',
   {
@@ -227,11 +242,13 @@ export const sessionQuestions = sqliteTable(
   (t) => [primaryKey({ columns: [t.sessionId, t.questionId] })],
 );
 
+/** Détails d’erreur d’une réponse, dévoilés pas à pas. */
 export interface AttemptHidden {
   errorLocation: string | null;
   errorExplanation: string | null;
 }
 
+/** Réponses envoyées par l’étudiant. */
 export const attempts = sqliteTable(
   'attempts',
   {
@@ -258,6 +275,7 @@ export const attempts = sqliteTable(
   (t) => [index('attempts_session_idx').on(t.sessionId, t.questionId)],
 );
 
+/** Aides obtenues et détails d’erreur dévoilés pendant une séance. */
 export const sessionEvents = sqliteTable(
   'session_events',
   {
@@ -269,26 +287,29 @@ export const sessionEvents = sqliteTable(
     kind: text('kind').$type<EventKind>().notNull(),
     attemptId: text('attempt_id'),
     contentMd: text('content_md').notNull().default(''),
-    data: text('data', { mode: 'json' }).$type<{ courseRefs?: CourseRef[]; source?: 'official' | 'ai'; auto?: boolean }>(),
+    data: text('data', { mode: 'json' }).$type<{ courseRefs?: CourseRef[]; source?: SolutionSource; auto?: boolean }>(),
     createdAt: createdAt(),
   },
   (t) => [index('events_session_idx').on(t.sessionId, t.questionId)],
 );
 
+/** Contenu d’un bilan rédigé. */
 export type ReportContent = Pick<ReportDto, 'strengthsMd' | 'overallMd' | 'blockingPoints' | 'questions'>;
 
+/** Bilans de fin de séance. */
 export const reports = sqliteTable('reports', {
   id: id(),
   sessionId: text('session_id')
     .notNull()
     .references(() => sessions.id, { onDelete: 'cascade' }),
-  status: text('status').$type<'pending' | 'ready' | 'error'>().notNull().default('pending'),
+  status: text('status').$type<ReportStatus>().notNull().default('pending'),
   error: text('error'),
   score: real('score'),
   content: text('content', { mode: 'json' }).$type<ReportContent>(),
   createdAt: createdAt(),
 });
 
+/** Points bloquants d’un cours. */
 export const weakPoints = sqliteTable(
   'weak_points',
   {
@@ -309,6 +330,7 @@ export const weakPoints = sqliteTable(
   (t) => [index('weak_points_course_idx').on(t.courseId)],
 );
 
+/** Historique de l’évolution des points bloquants. */
 export const weakPointEvents = sqliteTable('weak_point_events', {
   id: id(),
   weakPointId: text('weak_point_id')
@@ -320,6 +342,7 @@ export const weakPointEvents = sqliteTable('weak_point_events', {
   createdAt: createdAt(),
 });
 
+/** Quiz de révision ou quiz complets. */
 export const quizzes = sqliteTable(
   'quizzes',
   {
@@ -340,6 +363,7 @@ export const quizzes = sqliteTable(
   (t) => [index('quizzes_course_idx').on(t.courseId)],
 );
 
+/** Questions d’un quiz et réponses de l’étudiant. */
 export const quizItems = sqliteTable(
   'quiz_items',
   {
@@ -365,6 +389,7 @@ export const quizItems = sqliteTable(
   (t) => [index('quiz_items_quiz_idx').on(t.quizId)],
 );
 
+/** Conversations du chat (une par cours et une par séance). */
 export const chatThreads = sqliteTable('chat_threads', {
   id: id(),
   scope: text('scope').$type<'course' | 'session'>().notNull(),
@@ -376,6 +401,7 @@ export const chatThreads = sqliteTable('chat_threads', {
   createdAt: createdAt(),
 });
 
+/** Messages du chat. */
 export const chatMessages = sqliteTable(
   'chat_messages',
   {
@@ -392,6 +418,7 @@ export const chatMessages = sqliteTable(
   (t) => [index('chat_messages_thread_idx').on(t.threadId)],
 );
 
+/** File des tâches de fond. */
 export const jobs = sqliteTable(
   'jobs',
   {
@@ -411,6 +438,7 @@ export const jobs = sqliteTable(
   (t) => [index('jobs_course_idx').on(t.courseId), index('jobs_status_idx').on(t.status)],
 );
 
+/** Journal des appels à l’IA (coût, jetons, durée), pour la page Statistiques. */
 export const aiCalls = sqliteTable('ai_calls', {
   id: id(),
   task: text('task').notNull(),

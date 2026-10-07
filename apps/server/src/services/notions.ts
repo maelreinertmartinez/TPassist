@@ -1,30 +1,31 @@
+// Carte des notions d'un cours (générée sur demande par jobs/generateNotions) et fiches détaillées des notions,
+// rédigées par l'IA au premier clic puis gardées en base.
 import { createHash } from 'node:crypto';
 import { and, asc, desc, eq, inArray } from 'drizzle-orm';
-import { NOTION_KIND_LABELS, type JobDto, type NotionDetailDto, type NotionDto, type NotionMapDto } from '@tpassist/shared';
+import { NOTION_KIND_LABELS, stripAccents, type JobDto, type NotionDetailDto, type NotionDto, type NotionMapDto } from '@tpassist/shared';
 import { runAgent, type ContentBlock } from '../ai/agent';
 import { PROMPTS } from '../ai/prompts';
 import { courseToolsServer } from '../ai/tools/courseTools';
 import { db } from '../db/client';
-import { HttpError, notFound } from '../db/repo';
-import { courseSections, courses, jobs, notions, units, weakPoints } from '../db/schema';
-import { enqueueJob, hasPendingJob } from '../jobs/queue';
-import { jobDto } from './courses';
-import { dedupe } from './tutor';
+import { findById } from '../db/repo';
+import { courseSections, courses, jobs, notions, units } from '../db/schema';
+import { HttpError } from '../errors';
+import { enqueueJob, jobDto } from '../jobs/queue';
+import { dedupe } from '../utils';
+import { activeWeakPoints } from './weakPoints';
 
 type NotionRow = typeof notions.$inferSelect;
 
-/** Minuscules, sans accents ni ponctuation : sert à comparer des libellés. */
-export function normalizeLabel(s: string): string {
-  return s
-    .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
+/** Minuscules, sans accents ni ponctuation, mots séparés par une espace : sert à comparer des libellés. */
+export function normalizeText(s: string): string {
+  return stripAccents(s)
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, ' ')
     .trim();
 }
 
 /** Sections des chapitres de cours (celles dont la carte des notions est tirée). */
-export function chapterSections(courseId: string) {
+function chapterSections(courseId: string) {
   return db
     .select({ s: courseSections, unitTitle: units.title, unitOrder: units.order })
     .from(courseSections)
@@ -52,10 +53,10 @@ export function matchWeakPoints(
 ): Map<string, string[]> {
   const out = new Map<string, string[]>();
   const add = (notionId: string, wpId: string) => out.set(notionId, [...(out.get(notionId) ?? []), wpId]);
-  const titles = list.map((n) => ({ n, t: ` ${normalizeLabel(n.title)} ` }));
+  const titles = list.map((n) => ({ n, t: ` ${normalizeText(n.title)} ` }));
   for (const wp of wps) {
-    const label = ` ${normalizeLabel(wp.notion)} `;
-    const text = ` ${normalizeLabel(`${wp.notion} ${wp.descriptionMd}`)} `;
+    const label = ` ${normalizeText(wp.notion)} `;
+    const text = ` ${normalizeText(`${wp.notion} ${wp.descriptionMd}`)} `;
     const byText = titles.filter(({ t }) => (t.trim().length >= 4 && text.includes(t)) || (label.trim().length >= 4 && t.includes(label)));
     if (byText.length) {
       for (const { n } of byText) add(n.id, wp.id);
@@ -67,12 +68,14 @@ export function matchWeakPoints(
   return out;
 }
 
-function loadNotion(id: string): NotionRow {
-  return db.select().from(notions).where(eq(notions.id, id)).get() ?? notFound('Notion');
-}
+const loadNotion = (id: string): NotionRow => findById(notions, id, 'Notion');
 
+/**
+ * Carte des notions d'un cours, avec la dernière génération demandée et un indicateur « périmée »
+ * quand les chapitres ont changé depuis. Les références vers des notions ou sections disparues sont filtrées.
+ */
 export function getNotionMap(courseId: string): NotionMapDto {
-  const course = db.select().from(courses).where(eq(courses.id, courseId)).get() ?? notFound('Cours');
+  const course = findById(courses, courseId, 'Cours');
   const rows = db
     .select({ n: notions })
     .from(notions)
@@ -89,12 +92,7 @@ export function getNotionMap(courseId: string): NotionMapDto {
     sectionIds: n.sectionIds.filter((s) => sectionIds.has(s)),
     prerequisiteIds: n.prerequisiteIds.filter((p) => ids.has(p) && p !== n.id),
   }));
-  const wps = db
-    .select()
-    .from(weakPoints)
-    .where(and(eq(weakPoints.courseId, courseId), eq(weakPoints.status, 'active')))
-    .all();
-  const matched = matchWeakPoints(list, wps);
+  const matched = matchWeakPoints(list, activeWeakPoints(courseId));
   const job = db
     .select()
     .from(jobs)
@@ -115,7 +113,6 @@ export function getNotionMap(courseId: string): NotionMapDto {
         sectionIds: n.sectionIds,
         prerequisiteIds: n.prerequisiteIds,
         weakPointIds: matched.get(n.id) ?? [],
-        hasDetail: Boolean(n.detailMd),
       }),
     ),
     job: job ? jobDto(job) : null,
@@ -124,19 +121,19 @@ export function getNotionMap(courseId: string): NotionMapDto {
   };
 }
 
-/** Lance la génération de la carte des notions (sur demande uniquement). */
+/**
+ * Lance la génération de la carte des notions (sur demande uniquement) ; renvoie la tâche déjà en cours s'il y en a une.
+ * @throws HttpError 400 si le cours n'a aucun chapitre de cours
+ */
 export function requestNotionMap(courseId: string): JobDto {
-  db.select({ id: courses.id }).from(courses).where(eq(courses.id, courseId)).get() ?? notFound('Cours');
+  findById(courses, courseId, 'Cours');
   if (chapterSections(courseId).length === 0) throw new HttpError(400, 'Ajoute d’abord un chapitre de cours : la carte des notions est tirée de son contenu.');
-  if (hasPendingJob('notions', { courseId })) {
-    const pending = db
-      .select()
-      .from(jobs)
-      .where(and(eq(jobs.type, 'notions'), eq(jobs.courseId, courseId), inArray(jobs.status, ['queued', 'running'])))
-      .get()!;
-    return jobDto(pending);
-  }
-  return jobDto(enqueueJob({ type: 'notions', courseId, refId: courseId }));
+  const pending = db
+    .select()
+    .from(jobs)
+    .where(and(eq(jobs.type, 'notions'), eq(jobs.courseId, courseId), inArray(jobs.status, ['queued', 'running'])))
+    .get();
+  return jobDto(pending ?? enqueueJob({ type: 'notions', courseId, refId: courseId }));
 }
 
 function linkedSections(n: NotionRow): NotionDetailDto['sections'] {
@@ -151,6 +148,7 @@ function linkedSections(n: NotionRow): NotionDetailDto['sections'] {
     .map(({ s, unitTitle }) => ({ id: s.id, title: s.title, unitTitle, pageStart: s.pageStart, pageEnd: s.pageEnd, contentMd: s.contentMd }));
 }
 
+/** Fiche d'une notion (si déjà rédigée) et texte des sections du cours où elle est présentée. */
 export function getNotionDetail(id: string): NotionDetailDto {
   const n = loadNotion(id);
   return { id: n.id, detailMd: n.detailMd, sections: linkedSections(n) };
@@ -159,6 +157,7 @@ export function getNotionDetail(id: string): NotionDetailDto {
 const SECTION_LIMIT = 6000;
 const TOTAL_LIMIT = 20000;
 
+/** Contenu envoyé à l'IA pour rédiger la fiche : la notion, ses voisines dans la carte et le texte des sections liées. */
 function detailContent(n: NotionRow, sections: NotionDetailDto['sections']): ContentBlock[] {
   const others = db
     .select({ id: notions.id, title: notions.title, parentId: notions.parentId })

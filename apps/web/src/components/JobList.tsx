@@ -1,3 +1,4 @@
+// Tâches de fond d'un cours (analyse des PDF, générations…) en cours ou en échec, avec relance.
 import { useMutation } from '@tanstack/react-query';
 import type { JobDto, JobType } from '@tpassist/shared';
 import { Loader2, RotateCcw, XCircle } from 'lucide-react';

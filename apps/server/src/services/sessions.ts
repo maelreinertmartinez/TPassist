@@ -1,12 +1,15 @@
+// Séances de TD/TP/EI : création, état du lecteur, présence (temps actif), aides, réponses et navigation.
+// Les verrous temporels sont calculés ici à partir du temps actif enregistré ; le calcul lui-même est dans unlocks.ts.
 import { and, asc, desc, eq } from 'drizzle-orm';
-import { writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
 import {
   EMPTY_FLAGS,
+  isPlayableKind,
   type AttemptDto,
   type HeartbeatResponse,
   type HelpEventDto,
   type HelpKind,
+  type LocksDto,
+  type QuestionFlags,
   type QuestionView,
   type SessionMode,
   type SessionState,
@@ -16,27 +19,33 @@ import {
 } from '@tpassist/shared';
 import { config } from '../config';
 import { db, newId } from '../db/client';
-import { HttpError, notFound, orderedQuestions, questionWithContext, type QuestionContext } from '../db/repo';
-import { attempts, chatThreads, courses, reports, sessionEvents, sessionQuestions, sessions, units } from '../db/schema';
+import { findById, orderedQuestions, questionWithContext, type QuestionContext } from '../db/repo';
+import { attempts, courses, sessionEvents, sessionQuestions, sessions, units } from '../db/schema';
+import { HttpError, notFound } from '../errors';
 import { enqueueJob, hasPendingJob } from '../jobs/queue';
 import { pageImageUrl } from '../pdf/render';
-import { computeLocks, heartbeatDelta } from './unlocks';
+import { saveImage } from './images';
+import { latestReport } from './reports';
 import * as tutor from './tutor';
+import { computeLocks, heartbeatDelta } from './unlocks';
 
 type SessionRow = typeof sessions.$inferSelect;
 type SqRow = typeof sessionQuestions.$inferSelect;
 type AttemptRow = typeof attempts.$inferSelect;
 type EventRow = typeof sessionEvents.$inferSelect;
 
+/** Durée d'une EI quand le sujet n'en indique pas. */
 const DEFAULT_EI_SECONDS = 2 * 3600;
 
 // ---------- Chargement ----------
 
-export function loadSession(id: string): SessionRow {
-  return db.select().from(sessions).where(eq(sessions.id, id)).get() ?? notFound('Session');
+/** Séance par son id ; 404 si elle n'existe pas. */
+function loadSession(id: string): SessionRow {
+  return findById(sessions, id, 'Session');
 }
 
-function loadSq(sessionId: string, questionId: string): SqRow {
+/** Suivi d'une question dans une séance ; 404 s'il n'existe pas. */
+export function loadSq(sessionId: string, questionId: string): SqRow {
   return (
     db
       .select()
@@ -46,7 +55,8 @@ function loadSq(sessionId: string, questionId: string): SqRow {
   );
 }
 
-function updateSq(sessionId: string, questionId: string, patch: Partial<SqRow>) {
+/** Met à jour le suivi d'une question dans une séance. */
+export function updateSq(sessionId: string, questionId: string, patch: Partial<SqRow>) {
   db.update(sessionQuestions)
     .set(patch)
     .where(and(eq(sessionQuestions.sessionId, sessionId), eq(sessionQuestions.questionId, questionId)))
@@ -78,6 +88,10 @@ function eventsFor(sessionId: string, questionId: string): EventRow[] {
     .all();
 }
 
+function sessionQuestionsOf(sessionId: string): SqRow[] {
+  return db.select().from(sessionQuestions).where(eq(sessionQuestions.sessionId, sessionId)).orderBy(asc(sessionQuestions.order)).all();
+}
+
 function requireActive(s: SessionRow) {
   if (s.status !== 'in_progress') throw new HttpError(409, 'Cette session est terminée.');
 }
@@ -92,14 +106,19 @@ function requireCurrent(s: SessionRow, questionId: string) {
 
 // ---------- DTO ----------
 
-export function attemptDto(a: AttemptRow): AttemptDto {
+/** URL de la photo d'une tentative. */
+export function attemptImageUrl(attemptId: string): string {
+  return `/api/attempts/${attemptId}/image`;
+}
+
+function attemptDto(a: AttemptRow): AttemptDto {
   return {
     id: a.id,
     type: a.type,
     text: a.answerText,
     code: a.code,
     codeLang: a.codeLang,
-    imageUrl: a.imagePath ? `/api/attempts/${a.id}/image` : null,
+    imageUrl: a.imagePath ? attemptImageUrl(a.id) : null,
     verdict: a.verdict,
     revealed: {
       location: a.revealed.includes('location') ? (a.hidden?.errorLocation ?? '') : undefined,
@@ -121,8 +140,7 @@ function eventDto(e: EventRow): HelpEventDto {
   };
 }
 
-export function questionView(ctx: QuestionContext): QuestionView {
-  const { q, ex } = ctx;
+function questionView({ q, ex }: QuestionContext): QuestionView {
   return {
     id: q.id,
     label: q.label,
@@ -130,13 +148,12 @@ export function questionView(ctx: QuestionContext): QuestionView {
     contextMd: ex.contextMd,
     statementMd: q.statementMd,
     figures: q.documentId ? q.figurePages.map((page) => ({ page, url: pageImageUrl(q.documentId!, page) })) : [],
-    dependsOnPrevious: q.dependsOnPrevious,
     points: q.points,
-    hasOfficialSolution: Boolean(q.officialSolutionMd),
   };
 }
 
-function locksFor(s: SessionRow, sq: SqRow, list: AttemptRow[]) {
+/** Verrous des aides d'une question de la séance (tentatives lues en base si elles ne sont pas fournies). */
+export function questionLocks(s: SessionRow, sq: SqRow, list: AttemptRow[] = attemptsFor(s.id, sq.questionId)): LocksDto {
   return computeLocks({
     mode: s.mode,
     activeMs: sq.activeMs,
@@ -151,16 +168,21 @@ function locksFor(s: SessionRow, sq: SqRow, list: AttemptRow[]) {
 
 // ---------- Création / état ----------
 
+/**
+ * Lance une séance sur un TD, un TP ou une EI.
+ * Le mode est corrigé selon le type (un TD/TP est toujours en entraînement, une EI jamais).
+ * @param timeLimitSec durée choisie pour une EI (sinon celle du sujet, ou 2 h)
+ * @throws HttpError 400 pour un cours ou un corrigé, ou une partie sans question
+ */
 export function createSession(unitId: string, mode: SessionMode, timeLimitSec?: number | null): SessionRow {
-  const unit = db.select().from(units).where(eq(units.id, unitId)).get() ?? notFound('Partie');
-  if (!['td', 'tp', 'ei'].includes(unit.kind)) throw new HttpError(400, 'Seuls les TD, TP et EI peuvent être lancés.');
-  if (unit.kind === 'ei' && mode === 'tp') mode = 'ei_aides';
-  if (unit.kind !== 'ei' && mode !== 'tp') mode = 'tp';
+  const unit = findById(units, unitId, 'Partie');
+  if (!isPlayableKind(unit.kind)) throw new HttpError(400, 'Seuls les TD, TP et EI peuvent être lancés.');
+  const isEi = unit.kind === 'ei';
+  if (isEi && mode === 'tp') mode = 'ei_aides';
+  if (!isEi) mode = 'tp';
   const qs = orderedQuestions(unitId);
   if (qs.length === 0) throw new HttpError(400, "Aucune question n'a été détectée dans cette partie. Corrige-la dans l'éditeur.");
 
-  const isEi = unit.kind === 'ei';
-  const limit = isEi ? (timeLimitSec ?? (unit.meta.durationMinutes ? unit.meta.durationMinutes * 60 : DEFAULT_EI_SECONDS)) : null;
   const id = newId();
   const row = db
     .insert(sessions)
@@ -171,7 +193,7 @@ export function createSession(unitId: string, mode: SessionMode, timeLimitSec?: 
       mode,
       status: 'in_progress',
       currentQuestionId: qs[0].q.id,
-      timeLimitSec: limit,
+      timeLimitSec: isEi ? (timeLimitSec ?? (unit.meta.durationMinutes ? unit.meta.durationMinutes * 60 : DEFAULT_EI_SECONDS)) : null,
     })
     .returning()
     .get();
@@ -183,13 +205,13 @@ export function createSession(unitId: string, mode: SessionMode, timeLimitSec?: 
   return row;
 }
 
+/** État complet du lecteur : séance, barre de progression et question affichée. */
 export function getSessionState(id: string): SessionState {
   const s = loadSession(id);
-  const unit = db.select().from(units).where(eq(units.id, s.unitId)).get() ?? notFound('Partie');
-  const course = db.select().from(courses).where(eq(courses.id, s.courseId)).get() ?? notFound('Cours');
-  const sqs = db.select().from(sessionQuestions).where(eq(sessionQuestions.sessionId, id)).orderBy(asc(sessionQuestions.order)).all();
-  const qs = orderedQuestions(s.unitId);
-  const byQ = new Map(qs.map((r) => [r.q.id, r]));
+  const unit = findById(units, s.unitId, 'Partie');
+  const course = findById(courses, s.courseId, 'Cours');
+  const sqs = sessionQuestionsOf(id);
+  const byQ = new Map(orderedQuestions(s.unitId).map((r) => [r.q.id, r]));
   const answered = new Set(
     db
       .select({ q: attempts.questionId })
@@ -198,24 +220,19 @@ export function getSessionState(id: string): SessionState {
       .all()
       .map((r) => r.q),
   );
-  const report = db.select({ id: reports.id }).from(reports).where(eq(reports.sessionId, id)).orderBy(desc(reports.createdAt)).get();
-  const thread = db.select({ id: chatThreads.id }).from(chatThreads).where(eq(chatThreads.sessionId, id)).get();
 
   let current: SessionState['current'] = null;
-  if (s.currentQuestionId && s.status === 'in_progress') {
-    const sq = sqs.find((x) => x.questionId === s.currentQuestionId);
-    if (sq) {
-      const list = attemptsFor(id, sq.questionId);
-      current = {
-        question: questionView(questionWithContext(sq.questionId)),
-        status: sq.status,
-        closed: sq.closed,
-        flags: sq.flags,
-        events: eventsFor(id, sq.questionId).map(eventDto),
-        attempts: list.map(attemptDto),
-        locks: locksFor(s, sq, list),
-      };
-    }
+  const sq = s.status === 'in_progress' ? sqs.find((x) => x.questionId === s.currentQuestionId) : undefined;
+  if (sq) {
+    const list = attemptsFor(id, sq.questionId);
+    current = {
+      question: questionView(questionWithContext(sq.questionId)),
+      status: sq.status,
+      closed: sq.closed,
+      events: eventsFor(id, sq.questionId).map(eventDto),
+      attempts: list.map(attemptDto),
+      locks: questionLocks(s, sq, list),
+    };
   }
 
   return {
@@ -231,24 +248,18 @@ export function getSessionState(id: string): SessionState {
       timeLimitSec: s.timeLimitSec,
       elapsedSec: Math.floor(s.elapsedSec),
       score: s.score,
-      reportId: report?.id ?? null,
-      reviewQuizId: s.reviewQuizId,
-      chatThreadId: thread?.id ?? null,
+      reportId: latestReport(id)?.id ?? null,
     },
-    outline: sqs
-      .filter((sq) => byQ.has(sq.questionId))
-      .map((sq) => ({
-        id: sq.questionId,
-        label: byQ.get(sq.questionId)!.q.label,
-        exerciseTitle: byQ.get(sq.questionId)!.ex.title,
-        status: sq.status,
-        answered: answered.has(sq.questionId),
-      })),
+    outline: sqs.flatMap((x) => {
+      const r = byQ.get(x.questionId);
+      return r ? [{ id: x.questionId, label: r.q.label, exerciseTitle: r.ex.title, status: x.status, answered: answered.has(x.questionId) }] : [];
+    }),
     currentQuestionId: s.currentQuestionId,
     current,
   };
 }
 
+/** Séances d'un cours pour l'historique, de la plus récente à la plus ancienne. */
 export function listSessions(courseId: string): SessionSummary[] {
   const rows = db
     .select({ s: sessions, unitTitle: units.title, unitKind: units.kind })
@@ -259,7 +270,7 @@ export function listSessions(courseId: string): SessionSummary[] {
     .all();
   return rows.map(({ s, unitTitle, unitKind }) => {
     const sqs = db.select({ status: sessionQuestions.status, closed: sessionQuestions.closed }).from(sessionQuestions).where(eq(sessionQuestions.sessionId, s.id)).all();
-    const report = db.select({ id: reports.id }).from(reports).where(eq(reports.sessionId, s.id)).orderBy(desc(reports.createdAt)).get();
+    // En mode examen, une question est « faite » dès qu'elle a été traitée (aucune n'est fermée avant la fin).
     const done = s.mode === 'ei_examen' ? sqs.filter((x) => x.status !== 'unseen' && x.status !== 'seen').length : sqs.filter((x) => x.closed).length;
     return {
       id: s.id,
@@ -270,8 +281,7 @@ export function listSessions(courseId: string): SessionSummary[] {
       status: s.status,
       progress: { done, total: sqs.length },
       score: s.score,
-      reportId: report?.id ?? null,
-      reviewQuizId: s.reviewQuizId,
+      reportId: latestReport(s.id)?.id ?? null,
       createdAt: s.createdAt,
       updatedAt: s.updatedAt,
     };
@@ -280,6 +290,11 @@ export function listSessions(courseId: string): SessionSummary[] {
 
 // ---------- Présence / chronomètre ----------
 
+/**
+ * Signal de présence envoyé par le lecteur toutes les 5 s : avance le chronomètre de la séance et,
+ * si la page est visible, le temps actif de la question en cours (qui débloque les aides).
+ * Termine la séance quand le temps d'une EI est écoulé.
+ */
 export function heartbeat(id: string, questionId: string | null, visible: boolean): HeartbeatResponse {
   const s = loadSession(id);
   if (s.status !== 'in_progress') return { locks: null, elapsedSec: Math.floor(s.elapsedSec), timeUp: false, status: s.status };
@@ -291,13 +306,12 @@ export function heartbeat(id: string, questionId: string | null, visible: boolea
   if (questionId && questionId === s.currentQuestionId) {
     const sq = loadSq(id, questionId);
     if (visible) {
-      const activeMs = sq.activeMs + heartbeatDelta(sq.lastHeartbeatAt, now, config.heartbeatCapMs);
-      updateSq(id, questionId, { activeMs, lastHeartbeatAt: now });
-      sq.activeMs = activeMs;
+      sq.activeMs += heartbeatDelta(sq.lastHeartbeatAt, now, config.heartbeatCapMs);
+      updateSq(id, questionId, { activeMs: sq.activeMs, lastHeartbeatAt: now });
     } else {
       updateSq(id, questionId, { lastHeartbeatAt: null });
     }
-    locks = locksFor(s, sq, attemptsFor(id, questionId));
+    locks = questionLocks(s, sq);
   }
 
   if (s.timeLimitSec && elapsedSec >= s.timeLimitSec) {
@@ -309,89 +323,100 @@ export function heartbeat(id: string, questionId: string | null, visible: boolea
 
 // ---------- Aides ----------
 
+interface HelpResult {
+  contentMd: string;
+  data: EventRow['data'];
+}
+
+/**
+ * Pour chaque aide : comment l'obtenir, et ce qu'elle change sur la question une fois obtenue
+ * (drapeaux de difficulté, jalons de temps actif qui démarrent les verrous suivants).
+ * Ajouter une aide revient à ajouter une entrée ici.
+ */
+const HELP_ACTIONS: Record<HelpKind, { run: (questionId: string, sq: SqRow, onText: (d: string) => void) => Promise<HelpResult>; mark: (flags: QuestionFlags, sq: SqRow, atMs: number) => Partial<SqRow> }> = {
+  reformulation: {
+    run: async (questionId, _sq, onText) => ({ contentMd: (await tutor.reformulate(questionId, onText)).contentMd, data: null }),
+    mark: (flags) => {
+      flags.reformulate = true;
+      return {};
+    },
+  },
+  course_refs: {
+    run: async (questionId) => {
+      const r = await tutor.courseRefs(questionId);
+      return { contentMd: r.contentMd, data: { courseRefs: r.refs } };
+    },
+    mark: (flags, sq, atMs) => {
+      flags.courseRefs = true;
+      return sq.courseRefsAtMs === null ? { courseRefsAtMs: atMs } : {};
+    },
+  },
+  hint: {
+    run: async (questionId, _sq, onText) => ({ contentMd: (await tutor.hint(questionId, onText)).contentMd, data: null }),
+    mark: (flags, sq, atMs) => {
+      flags.hint = true;
+      return sq.hintAtMs === null ? { hintAtMs: atMs } : {};
+    },
+  },
+  solution: {
+    run: async (questionId, sq, onText) => {
+      const r = await tutor.referenceSolution(questionId, onText);
+      // `auto` : solution affichée en transition après la fermeture de la question (pas une aide demandée).
+      return { contentMd: r.contentMd, data: { source: r.source, auto: sq.closed } };
+    },
+    mark: (flags, sq) => {
+      if (!sq.closed) flags.solution = true;
+      return { solutionUnlocked: true };
+    },
+  },
+};
+
+/**
+ * Obtient une aide sur la question en cours (diffusée au fil de l'eau) et l'enregistre dans la séance.
+ * Une aide déjà obtenue est renvoyée telle quelle.
+ * @throws HttpError 403 en mode examen, 409 si la question n'est plus la question en cours, 423 si l'aide est verrouillée
+ */
 export async function requestHelp(id: string, questionId: string, kind: HelpKind, onText: (d: string) => void): Promise<HelpEventDto> {
   const s = loadSession(id);
   requireActive(s);
   requireHelpsAllowed(s);
   requireCurrent(s, questionId);
   const sq = loadSq(id, questionId);
-  const locks = locksFor(s, sq, attemptsFor(id, questionId));
+  const locks = questionLocks(s, sq);
   if (kind === 'hint' && !locks.hint.unlocked) throw new HttpError(423, locks.hint.reason || "L'indice n'est pas encore débloqué.");
   if (kind === 'solution' && !locks.solution.unlocked) throw new HttpError(423, locks.solution.reason || "La solution n'est pas encore débloquée.");
 
   const existing = eventsFor(id, questionId).find((e) => e.kind === kind);
   if (existing) return eventDto(existing);
 
+  const action = HELP_ACTIONS[kind];
   const atMs = sq.activeMs;
-  let contentMd = '';
-  let data: EventRow['data'] = null;
-  if (kind === 'reformulation') {
-    contentMd = (await tutor.reformulate(questionId, onText)).contentMd;
-  } else if (kind === 'course_refs') {
-    const r = await tutor.courseRefs(questionId);
-    contentMd = r.contentMd;
-    data = { courseRefs: r.refs };
-  } else if (kind === 'hint') {
-    contentMd = (await tutor.hint(questionId, onText)).contentMd;
-  } else {
-    const r = await tutor.referenceSolution(questionId, onText);
-    contentMd = r.contentMd;
-    data = { source: r.source, auto: sq.closed };
-  }
+  const { contentMd, data } = await action.run(questionId, sq, onText);
 
-  // Jalons et drapeaux enregistrés une fois l'aide obtenue (au temps actif de la demande).
+  // Jalons et drapeaux enregistrés une fois l'aide obtenue, au temps actif de la demande.
   const fresh = loadSq(id, questionId);
   const flags = { ...fresh.flags };
-  const patch: Partial<SqRow> = {};
-  if (kind === 'reformulation') flags.reformulate = true;
-  if (kind === 'course_refs') {
-    flags.courseRefs = true;
-    if (fresh.courseRefsAtMs === null) patch.courseRefsAtMs = atMs;
-  }
-  if (kind === 'hint') {
-    flags.hint = true;
-    if (fresh.hintAtMs === null) patch.hintAtMs = atMs;
-  }
-  if (kind === 'solution') {
-    patch.solutionUnlocked = true;
-    if (!fresh.closed) flags.solution = true;
-  }
-  updateSq(id, questionId, { ...patch, flags });
+  updateSq(id, questionId, { ...action.mark(flags, fresh, atMs), flags });
   touchSession(id);
 
-  const ev = db
-    .insert(sessionEvents)
-    .values({ id: newId(), sessionId: id, questionId, kind, contentMd, data })
-    .returning()
-    .get();
+  const ev = db.insert(sessionEvents).values({ id: newId(), sessionId: id, questionId, kind, contentMd, data }).returning().get();
   return eventDto(ev);
 }
 
 // ---------- Réponses ----------
 
-function parseDataUrl(dataUrl: string): { ext: 'png' | 'jpg'; buf: Buffer } {
-  const m = /^data:image\/(png|jpeg|jpg|webp);base64,(.+)$/s.exec(dataUrl);
-  if (!m) throw new HttpError(400, 'Image invalide (PNG ou JPEG attendu).');
-  const buf = Buffer.from(m[2], 'base64');
-  if (buf.length > 12 * 1024 * 1024) throw new HttpError(413, 'Image trop lourde (12 Mo max).');
-  return { ext: m[1] === 'png' ? 'png' : 'jpg', buf };
-}
-
-export async function saveImage(dataUrl: string, name: string): Promise<string> {
-  const { ext, buf } = parseDataUrl(dataUrl);
-  const path = join(config.answersDir, `${name}.${ext}`);
-  await writeFile(path, buf);
-  return path;
-}
-
+/**
+ * Enregistre une réponse à la question en cours et la fait corriger par l'IA (sauf en mode examen,
+ * où elle est corrigée dans le bilan).
+ * @throws HttpError 400 si la réponse est vide, 409 si la question est fermée ou déjà réussie
+ */
 export async function submitAttempt(id: string, body: SubmitAttemptBody): Promise<SubmitAttemptResponse> {
   const s = loadSession(id);
   requireActive(s);
   requireCurrent(s, body.questionId);
   const sq = loadSq(id, body.questionId);
   if (sq.closed) throw new HttpError(409, 'Cette question est déjà terminée.');
-  const previous = attemptsFor(id, body.questionId);
-  if (s.mode !== 'ei_examen' && previous.some((a) => a.verdict === 'correct')) {
+  if (s.mode !== 'ei_examen' && attemptsFor(id, body.questionId).some((a) => a.verdict === 'correct')) {
     throw new HttpError(409, 'Tu as déjà répondu correctement à cette question.');
   }
 
@@ -417,19 +442,7 @@ export async function submitAttempt(id: string, body: SubmitAttemptBody): Promis
   const fresh = loadSq(id, body.questionId);
   const row = db
     .insert(attempts)
-    .values({
-      id: attemptId,
-      sessionId: id,
-      questionId: body.questionId,
-      type,
-      answerText: text,
-      code,
-      codeLang: answer.codeLang,
-      imagePath,
-      verdict,
-      hidden,
-      submittedAtMs: fresh.activeMs,
-    })
+    .values({ id: attemptId, sessionId: id, questionId: body.questionId, type, answerText: text, code, codeLang: answer.codeLang, imagePath, verdict, hidden, submittedAtMs: fresh.activeMs })
     .returning()
     .get();
 
@@ -442,11 +455,13 @@ export async function submitAttempt(id: string, body: SubmitAttemptBody): Promis
   }
   updateSq(id, body.questionId, { status, flags });
   touchSession(id);
-
-  const list = attemptsFor(id, body.questionId);
-  return { attempt: attemptDto(row), locks: locksFor(s, { ...fresh, status, flags }, list), status };
+  return { attempt: attemptDto(row), locks: questionLocks(s, { ...fresh, status, flags }), status };
 }
 
+/**
+ * Dévoile l'emplacement puis l'explication de l'erreur de la dernière réponse fausse, quand leur délai est écoulé.
+ * @throws HttpError 409 si ce n'est pas la dernière réponse fausse, 423 si l'étape est encore verrouillée
+ */
 export function revealError(id: string, attemptId: string, what: 'location' | 'explanation') {
   const s = loadSession(id);
   requireActive(s);
@@ -454,19 +469,14 @@ export function revealError(id: string, attemptId: string, what: 'location' | 'e
   const a = db.select().from(attempts).where(and(eq(attempts.id, attemptId), eq(attempts.sessionId, id))).get() ?? notFound('Tentative');
   requireCurrent(s, a.questionId);
   const sq = loadSq(id, a.questionId);
-  const list = attemptsFor(id, a.questionId);
-  const locks = locksFor(s, sq, list);
+  const locks = questionLocks(s, sq);
   if (!locks.error || locks.error.attemptId !== attemptId) throw new HttpError(409, 'Seule la dernière réponse fausse peut être détaillée.');
 
-  const already = a.revealed.includes(what);
-  if (!already) {
+  if (!a.revealed.includes(what)) {
     const lock = what === 'location' ? locks.error.showError : locks.error.explainError;
     if (!lock.unlocked) throw new HttpError(423, lock.reason || 'Pas encore disponible.');
     db.update(attempts)
-      .set({
-        revealed: [...a.revealed, what],
-        ...(what === 'location' ? { shownAtMs: sq.activeMs } : { explainedAtMs: sq.activeMs }),
-      })
+      .set({ revealed: [...a.revealed, what], ...(what === 'location' ? { shownAtMs: sq.activeMs } : { explainedAtMs: sq.activeMs }) })
       .where(eq(attempts.id, attemptId))
       .run();
     const contentMd = (what === 'location' ? a.hidden?.errorLocation : a.hidden?.errorExplanation) ?? '';
@@ -476,7 +486,7 @@ export function revealError(id: string, attemptId: string, what: 'location' | 'e
     touchSession(id);
   }
   const updated = db.select().from(attempts).where(eq(attempts.id, attemptId)).get()!;
-  return { attempt: attemptDto(updated), locks: locksFor(s, loadSq(id, a.questionId), attemptsFor(id, a.questionId)) };
+  return { attempt: attemptDto(updated), locks: questionLocks(s, loadSq(id, a.questionId)) };
 }
 
 // ---------- Navigation ----------
@@ -486,6 +496,8 @@ export function revealError(id: string, attemptId: string, what: 'location' | 'e
  * - Après une bonne réponse : la solution expliquée est affichée en transition avant de continuer.
  * - `skip` (« Passer la question ») : on enchaîne directement sur la question suivante, sans solution ;
  *   elle reste consultable dans le bilan.
+ * @param struggled réponse à « As-tu galéré ? », obligatoire si aucune réponse n'a été proposée
+ * @throws HttpError 409 `struggle_required` si `struggled` manque alors qu'il est obligatoire
  */
 export function closeQuestion(id: string, questionId: string, struggled?: boolean | null, opts: { skip?: boolean } = {}) {
   const s = loadSession(id);
@@ -493,42 +505,41 @@ export function closeQuestion(id: string, questionId: string, struggled?: boolea
   requireCurrent(s, questionId);
   if (s.mode === 'ei_examen') throw new HttpError(400, 'Utilise « Question suivante » en mode examen.');
   const sq = loadSq(id, questionId);
-  if (sq.closed) return opts.skip ? advance(id) : getSessionState(id);
-  const list = attemptsFor(id, questionId);
-  const flags = { ...sq.flags };
-  let status = sq.status;
-  if (list.length === 0) {
-    if (struggled === undefined || struggled === null) throw new HttpError(409, 'Indique si tu as eu du mal sur cette question.', 'struggle_required');
-    flags.selfStruggle = struggled;
-    status = 'skipped';
-  } else if (!list.some((a) => a.verdict === 'correct')) {
-    status = 'wrong';
+  if (!sq.closed) {
+    const list = attemptsFor(id, questionId);
+    const flags = { ...sq.flags };
+    let status = sq.status;
+    if (list.length === 0) {
+      if (struggled === undefined || struggled === null) throw new HttpError(409, 'Indique si tu as eu du mal sur cette question.', 'struggle_required');
+      flags.selfStruggle = struggled;
+      status = 'skipped';
+    } else if (!list.some((a) => a.verdict === 'correct')) {
+      status = 'wrong';
+    }
+    updateSq(id, questionId, { closed: true, solutionUnlocked: true, status, flags, lastHeartbeatAt: null });
+    touchSession(id);
   }
-  updateSq(id, questionId, { closed: true, solutionUnlocked: true, status, flags, lastHeartbeatAt: null });
-  touchSession(id);
   return opts.skip ? advance(id) : getSessionState(id);
 }
 
-/** Passe à la question suivante (ou termine la session). */
+/**
+ * Passe à la question suivante. En entraînement, revient sur une question non terminée s'il en reste,
+ * et termine la séance sinon ; en mode examen, avance simplement dans l'ordre.
+ * @throws HttpError 409 si la question en cours n'est pas terminée (hors mode examen)
+ */
 export function advance(id: string) {
   const s = loadSession(id);
   requireActive(s);
-  const sqs = db.select().from(sessionQuestions).where(eq(sessionQuestions.sessionId, id)).orderBy(asc(sessionQuestions.order)).all();
+  const sqs = sessionQuestionsOf(id);
   const cur = sqs.find((x) => x.questionId === s.currentQuestionId);
-  if (s.mode !== 'ei_examen' && cur && !cur.closed) throw new HttpError(409, 'Termine d’abord la question en cours.');
+  const exam = s.mode === 'ei_examen';
+  if (!exam && cur && !cur.closed) throw new HttpError(409, 'Termine d’abord la question en cours.');
 
-  let next: SqRow | undefined;
-  if (s.mode === 'ei_examen') {
-    next = sqs.find((x) => cur && x.order > cur.order);
-  } else {
-    next = sqs.find((x) => !x.closed && (!cur || x.order > cur.order)) ?? sqs.find((x) => !x.closed);
-  }
-  if (!next) {
-    if (s.mode === 'ei_examen') return getSessionState(id);
-    finishSession(id);
-    return getSessionState(id);
-  }
-  goTo(s, next);
+  const next = exam
+    ? sqs.find((x) => cur && x.order > cur.order)
+    : (sqs.find((x) => !x.closed && (!cur || x.order > cur.order)) ?? sqs.find((x) => !x.closed));
+  if (next) goTo(s, next);
+  else if (!exam) finishSession(id);
   return getSessionState(id);
 }
 
@@ -547,13 +558,10 @@ export function gotoQuestion(id: string, questionId: string) {
   return getSessionState(id);
 }
 
+/** Termine la séance et lance la rédaction du bilan (une seule fois). */
 export function finishSession(id: string) {
   const s = loadSession(id);
   if (s.status !== 'in_progress') return;
   touchSession(id, { status: 'reporting', finishedAt: Date.now() });
   if (!hasPendingJob('report', { refId: id })) enqueueJob({ type: 'report', courseId: s.courseId, refId: id });
-}
-
-export function deleteSession(id: string) {
-  db.delete(sessions).where(eq(sessions.id, id)).run();
 }

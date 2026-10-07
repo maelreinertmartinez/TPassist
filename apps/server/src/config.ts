@@ -1,3 +1,4 @@
+// Configuration lue une fois au démarrage (variables d'environnement, chemins des données).
 import { mkdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -6,6 +7,7 @@ const repoRoot = fileURLToPath(new URL('../../../', import.meta.url));
 
 const dataDir = resolve(process.env.DATA_DIR ?? join(repoRoot, 'data'));
 
+/** Configuration de l’application. */
 export const config = {
   port: Number(process.env.PORT ?? 3000),
   host: process.env.HOST ?? '0.0.0.0',
@@ -13,8 +15,8 @@ export const config = {
   dbFile: join(dataDir, 'tpassist.db'),
   filesDir: join(dataDir, 'files'),
   pagesDir: join(dataDir, 'pages'),
+  /** Photos de copies et images jointes au chat. */
   answersDir: join(dataDir, 'answers'),
-  chatDir: join(dataDir, 'chat'),
   /** Répertoire de travail (cwd) des agents : stable pour permettre la reprise des sessions SDK. */
   workspaceDir: join(dataDir, 'workspace'),
   webDist: resolve(process.env.WEB_DIST ?? join(repoRoot, 'apps/web/dist')),
@@ -31,21 +33,17 @@ export const config = {
   heartbeatCapMs: 15_000,
 };
 
+/** Crée les dossiers de données s'ils n'existent pas. */
 export function ensureDataDirs() {
-  for (const dir of [
-    config.dataDir,
-    config.filesDir,
-    config.pagesDir,
-    config.answersDir,
-    config.chatDir,
-    config.workspaceDir,
-  ]) {
+  for (const dir of [config.dataDir, config.filesDir, config.pagesDir, config.answersDir, config.workspaceDir]) {
     mkdirSync(dir, { recursive: true });
   }
 }
 
+/** Famille de tâche IA : chacune peut utiliser un modèle différent (variables TPASSIST_MODEL_*). */
 export type TaskKind = 'ingest' | 'tutor' | 'generate';
 
+/** Modèle à utiliser pour une famille de tâches (le modèle principal par défaut). */
 export function modelFor(kind: TaskKind): string {
   if (kind === 'ingest') return config.modelIngest ?? config.model;
   if (kind === 'tutor') return config.modelTutor ?? config.model;

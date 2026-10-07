@@ -1,8 +1,7 @@
 import { EMPTY_FLAGS, type QuestionFlags } from '@tpassist/shared';
 import { describe, expect, it } from 'vitest';
-import { allocateWeakPointItems } from '../src/jobs/generateQuiz';
 import { helpLabels, reviewQuizSize, struggleWeight } from '../src/services/struggle';
-import { applyOutcome } from '../src/services/weakPoints';
+import { allocateWeakPointItems, applyOutcome } from '../src/services/weakPoints';
 
 const f = (over: Partial<QuestionFlags>): QuestionFlags => ({ ...EMPTY_FLAGS, ...over });
 

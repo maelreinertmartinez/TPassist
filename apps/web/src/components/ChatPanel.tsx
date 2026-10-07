@@ -1,14 +1,19 @@
+// Chat « Poser une question » dans un tiroir latéral : texte (LaTeX avec aperçu) et image collée ou jointe.
+// La réponse du tuteur est diffusée au fil de l'eau.
 import { useQuery } from '@tanstack/react-query';
 import type { ChatMessageDto, ChatThreadDto } from '@tpassist/shared';
-import clsx from 'clsx';
 import { Eye, ImagePlus, MessageCircleQuestion, Send, Sparkles, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { api, errorMessage } from '../lib/api';
-import { imageFileToDataUrl } from '../lib/format';
+import { imageFileToDataUrl, imageFromClipboard } from '../lib/images';
 import { postSse } from '../lib/sse';
 import { Markdown } from './Markdown';
-import { Callout, ErrorBox, IconButton, Spinner } from './ui';
+import { Callout, Drawer, ErrorBox, IconButton, Spinner } from './ui';
 
+/**
+ * @param threadUrl route qui renvoie (et crée au besoin) la conversation : celle du cours ou celle de la séance
+ * @param onSent appelé après chaque réponse (la séance compte les questions posées)
+ */
 export function ChatPanel({ open, onClose, threadUrl, subtitle, onSent }: { open: boolean; onClose: () => void; threadUrl: string; subtitle: string; onSent?: () => void }) {
   const thread = useQuery({ queryKey: ['chat', threadUrl], queryFn: () => api.get<ChatThreadDto>(threadUrl), enabled: open });
   const [text, setText] = useState('');
@@ -49,7 +54,7 @@ export function ChatPanel({ open, onClose, threadUrl, subtitle, onSent }: { open
   };
 
   const onPaste = async (e: React.ClipboardEvent) => {
-    const file = [...e.clipboardData.files].find((f) => f.type.startsWith('image/'));
+    const file = imageFromClipboard(e);
     if (file) {
       e.preventDefault();
       setImage(await imageFileToDataUrl(file));
@@ -57,14 +62,7 @@ export function ChatPanel({ open, onClose, threadUrl, subtitle, onSent }: { open
   };
 
   return (
-    <aside
-      className={clsx(
-        'no-print fixed inset-y-0 right-0 z-40 flex w-full max-w-md flex-col bg-raised shadow-e4 transition-transform duration-200',
-        open ? 'translate-x-0' : 'pointer-events-none translate-x-full',
-      )}
-      aria-hidden={!open}
-      inert={!open}
-    >
+    <Drawer open={open} onClose={onClose} label="Poser une question">
       <div className="flex items-start justify-between gap-2 px-4 py-3">
         <div className="min-w-0">
           <p className="flex items-center gap-2 text-sm font-semibold">
@@ -168,7 +166,7 @@ export function ChatPanel({ open, onClose, threadUrl, subtitle, onSent }: { open
           </div>
         )}
       </div>
-    </aside>
+    </Drawer>
   );
 }
 

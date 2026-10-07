@@ -1,27 +1,45 @@
-import { and, asc, eq, inArray, max, sql } from 'drizzle-orm';
+// Requêtes de données réutilisées par plusieurs services et tâches (aucune règle métier ici).
+import { and, asc, count, eq, inArray, max, type InferSelectModel, type SQL } from 'drizzle-orm';
+import type { SQLiteColumn, SQLiteTable } from 'drizzle-orm/sqlite-core';
+import type { UnitKind } from '@tpassist/shared';
+import { notFound } from '../errors';
 import { db, ftsDeleteSections, ftsUpsertSection, newId } from './client';
 import { courseSections, exercises, questions, units } from './schema';
 
-export class HttpError extends Error {
-  constructor(
-    public readonly status: number,
-    message: string,
-    public readonly code?: string,
-  ) {
-    super(message);
-  }
+type TableWithId = SQLiteTable & { id: SQLiteColumn };
+
+/** Ligne d'une table par son id ; lève une 404 « <label> introuvable » si elle n'existe pas. */
+export function findById<T extends TableWithId>(table: T, id: string, label: string): InferSelectModel<T> {
+  const row = db
+    .select()
+    .from(table as SQLiteTable)
+    .where(eq(table.id, id))
+    .get() as InferSelectModel<T> | undefined;
+  return row ?? notFound(label);
 }
 
-export function notFound(what = 'Ressource'): never {
-  throw new HttpError(404, `${what} introuvable`);
+/** Nombre de lignes d'une table vérifiant `where`. */
+export function countWhere(table: SQLiteTable, where?: SQL): number {
+  return db.select({ n: count() }).from(table).where(where).get()?.n ?? 0;
 }
 
-export function nextUnitOrder(courseId: string): number {
-  const r = db.select({ m: max(units.order) }).from(units).where(eq(units.courseId, courseId)).get();
-  return (r?.m ?? 0) + 1;
+/** Prochaine valeur d'une colonne d'ordre (max + 1, ou 1 si aucune ligne). */
+export function nextOrder(column: SQLiteColumn, where: SQL): number {
+  const r = db.select({ m: max(column) }).from(column.table).where(where).get();
+  return Number(r?.m ?? 0) + 1;
 }
 
-/** Supprime des unités et nettoie l'index plein texte de leurs sections. */
+/** Unités d'un cours dans l'ordre, éventuellement limitées à certains types. */
+export function courseUnits(courseId: string, kinds?: readonly UnitKind[]) {
+  return db
+    .select()
+    .from(units)
+    .where(and(eq(units.courseId, courseId), kinds ? inArray(units.kind, [...kinds]) : undefined))
+    .orderBy(asc(units.order))
+    .all();
+}
+
+/** Supprime des unités (et tout ce qui en dépend) et nettoie l'index plein texte de leurs sections. */
 export function deleteUnits(unitIds: string[]) {
   if (unitIds.length === 0) return;
   const secs = db.select({ id: courseSections.id }).from(courseSections).where(inArray(courseSections.unitId, unitIds)).all();
@@ -31,17 +49,8 @@ export function deleteUnits(unitIds: string[]) {
   db.delete(units).where(inArray(units.id, unitIds)).run();
 }
 
-export function insertSection(input: {
-  unitId: string;
-  courseId: string;
-  order: number;
-  title: string;
-  pageStart: number | null;
-  pageEnd: number | null;
-  summary: string;
-  keyConcepts: string[];
-  contentMd: string;
-}) {
+/** Crée une section de cours et l'indexe pour la recherche plein texte. */
+export function insertSection(input: Omit<typeof courseSections.$inferInsert, 'id'> & { keyConcepts: string[] }) {
   const row = db
     .insert(courseSections)
     .values({ id: newId(), ...input })
@@ -51,11 +60,13 @@ export function insertSection(input: {
   return row;
 }
 
+/** Réindexe une section après modification. */
 export function updateSectionFts(sectionId: string) {
   const row = db.select().from(courseSections).where(eq(courseSections.id, sectionId)).get();
   if (row) ftsUpsertSection(row);
 }
 
+/** Exercice à créer, avec ses questions (issu d'une extraction ou d'une génération). */
 export interface NewExercise {
   title: string;
   contextMd: string;
@@ -70,22 +81,21 @@ export interface NewExercise {
   }[];
 }
 
+/**
+ * Ajoute des exercices et leurs questions à la fin d'une unité.
+ * @returns les ids créés, dans l'ordre de `list`
+ */
 export function insertExercises(unitId: string, documentId: string | null, list: NewExercise[], startOrder = 0) {
-  const created: { exerciseId: string; questionIds: string[] }[] = [];
-  let qOrder = (db.select({ m: max(questions.order) }).from(questions).where(eq(questions.unitId, unitId)).get()?.m ?? 0) + 1;
-  list.forEach((ex, i) => {
-    const exRow = db
-      .insert(exercises)
-      .values({ id: newId(), unitId, order: startOrder + i, title: ex.title, contextMd: ex.contextMd })
-      .returning()
-      .get();
-    const qIds: string[] = [];
-    for (const q of ex.questions) {
+  let qOrder = nextOrder(questions.order, eq(questions.unitId, unitId));
+  return list.map((ex, i) => {
+    const exerciseId = newId();
+    db.insert(exercises).values({ id: exerciseId, unitId, order: startOrder + i, title: ex.title, contextMd: ex.contextMd }).run();
+    const questionIds = ex.questions.map((q) => {
       const id = newId();
       db.insert(questions)
         .values({
           id,
-          exerciseId: exRow.id,
+          exerciseId,
           unitId,
           documentId,
           order: qOrder++,
@@ -99,14 +109,13 @@ export function insertExercises(unitId: string, documentId: string | null, list:
           weakPointId: q.weakPointId ?? null,
         })
         .run();
-      qIds.push(id);
-    }
-    created.push({ exerciseId: exRow.id, questionIds: qIds });
+      return id;
+    });
+    return { exerciseId, questionIds };
   });
-  return created;
 }
 
-/** Questions d'une unité dans l'ordre (exercice puis question). */
+/** Questions d'une unité dans l'ordre (exercice puis question), avec leur exercice. */
 export function orderedQuestions(unitId: string) {
   return db
     .select({ q: questions, ex: exercises })
@@ -117,6 +126,14 @@ export function orderedQuestions(unitId: string) {
     .all();
 }
 
+/** Exercices d'une unité dans l'ordre, chacun avec ses questions (y compris les exercices encore vides). */
+export function exercisesWithQuestions(unitId: string) {
+  const exs = db.select().from(exercises).where(eq(exercises.unitId, unitId)).orderBy(asc(exercises.order)).all();
+  const qs = db.select().from(questions).where(eq(questions.unitId, unitId)).orderBy(asc(questions.order)).all();
+  return exs.map((ex) => ({ ex, questions: qs.filter((q) => q.exerciseId === ex.id) }));
+}
+
+/** Une question avec son exercice et son unité ; 404 si elle n'existe pas. */
 export function questionWithContext(questionId: string) {
   const row = db
     .select({ q: questions, ex: exercises, unit: units })
@@ -125,18 +142,8 @@ export function questionWithContext(questionId: string) {
     .innerJoin(units, eq(units.id, questions.unitId))
     .where(eq(questions.id, questionId))
     .get();
-  if (!row) notFound('Question');
-  return row;
+  return row ?? notFound('Question');
 }
 
+/** Question avec son exercice et son unité. */
 export type QuestionContext = ReturnType<typeof questionWithContext>;
-
-export function countBy<T extends string>(values: T[]): Record<T, number> {
-  const out = {} as Record<T, number>;
-  for (const v of values) out[v] = (out[v] ?? 0) + 1;
-  return out;
-}
-
-export const nowMs = () => Date.now();
-
-export { and, eq, sql };

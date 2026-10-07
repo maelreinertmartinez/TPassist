@@ -1,9 +1,10 @@
+// Schémas des sorties structurées demandées à l'IA : convertis en JSON Schema pour l'API, puis validés par Zod.
+// Les descriptions des champs font partie du prompt : elles guident l'IA.
 import { z } from 'zod';
 
-// Schémas des sorties structurées demandées à l'IA (validés par Zod après coup).
+const PageKindEnum = z.enum(['cours', 'td', 'tp', 'ei', 'corrige', 'autre']);
 
-export const PageKindEnum = z.enum(['cours', 'td', 'tp', 'ei', 'corrige', 'autre']);
-
+/** Classement de chaque page d’un lot (type, partie, début de partie). */
 export const SegmentationSchema = z.object({
   pages: z.array(
     z.object({
@@ -17,8 +18,8 @@ export const SegmentationSchema = z.object({
     }),
   ),
 });
-export type Segmentation = z.infer<typeof SegmentationSchema>;
 
+/** Sections d’un chapitre de cours, transcrites lot par lot. */
 export const CourseExtractionSchema = z.object({
   sections: z.array(
     z.object({
@@ -32,8 +33,10 @@ export const CourseExtractionSchema = z.object({
     }),
   ),
 });
+/** Résultat de la transcription d’un lot de pages de cours. */
 export type CourseExtraction = z.infer<typeof CourseExtractionSchema>;
 
+/** Exercices et questions d’un TD, TP ou EI, transcrits lot par lot. */
 export const ExerciseExtractionSchema = z.object({
   durationMinutes: z.number().nullable().describe("Durée de l'épreuve en minutes si indiquée (EI), sinon null"),
   exercises: z.array(
@@ -57,8 +60,10 @@ export const ExerciseExtractionSchema = z.object({
     }),
   ),
 });
+/** Résultat de la transcription d’un lot de pages d’exercices. */
 export type ExerciseExtraction = z.infer<typeof ExerciseExtractionSchema>;
 
+/** Solutions d’un corrigé, question par question. */
 export const CorrigeExtractionSchema = z.object({
   targetTitle: z.string().describe('Titre du sujet corrigé (ex. « TD 3 – Espaces vectoriels »)'),
   solutions: z.array(
@@ -71,8 +76,10 @@ export const CorrigeExtractionSchema = z.object({
     }),
   ),
 });
+/** Résultat de la transcription d’un corrigé. */
 export type CorrigeExtraction = z.infer<typeof CorrigeExtractionSchema>;
 
+/** Rattachement des corrigés à leur sujet, solution par solution. */
 export const LinkCorrectionsSchema = z.object({
   links: z.array(
     z.object({
@@ -87,8 +94,10 @@ export const LinkCorrectionsSchema = z.object({
     }),
   ),
 });
+/** Rattachements proposés par l’IA (ou l’heuristique de repli). */
 export type LinkCorrections = z.infer<typeof LinkCorrectionsSchema>;
 
+/** Correction d’une réponse : verdict, passage fautif et explication. */
 export const VerifySchema = z.object({
   verdict: z.enum(['correct', 'incorrect', 'partiel']),
   errorLocation: z
@@ -97,8 +106,10 @@ export const VerifySchema = z.object({
     .describe("Passage fautif recopié MOT POUR MOT depuis la réponse de l'étudiant (pour une photo : description précise de l'endroit). null si correct."),
   errorExplanation: z.string().nullable().describe("Explication pédagogique de l'erreur, sans donner toute la solution. null si correct."),
 });
+/** Correction d’une réponse. */
 export type VerifyResult = z.infer<typeof VerifySchema>;
 
+/** Parties du cours utiles pour une question. */
 export const CourseRefsSchema = z.object({
   refs: z.array(
     z.object({
@@ -108,8 +119,8 @@ export const CourseRefsSchema = z.object({
     }),
   ),
 });
-export type CourseRefsResult = z.infer<typeof CourseRefsSchema>;
 
+/** Bilan d’un exercice : explication, solution et note de chaque question. */
 export const ReportExerciseSchema = z.object({
   questions: z.array(
     z.object({
@@ -121,8 +132,8 @@ export const ReportExerciseSchema = z.object({
     }),
   ),
 });
-export type ReportExercise = z.infer<typeof ReportExerciseSchema>;
 
+/** Synthèse d’une séance : points forts, conseils et points bloquants. */
 export const ReportSummarySchema = z.object({
   strengthsMd: z.string().describe('Points forts (liste Markdown)'),
   overallMd: z.string().describe('Bilan global et conseils de révision (Markdown)'),
@@ -136,8 +147,10 @@ export const ReportSummarySchema = z.object({
     }),
   ),
 });
+/** Synthèse d’une séance. */
 export type ReportSummary = z.infer<typeof ReportSummarySchema>;
 
+/** Questions d’un quiz (QCM ou réponse courte). */
 export const QuizGenSchema = z.object({
   title: z.string(),
   items: z.array(
@@ -153,14 +166,16 @@ export const QuizGenSchema = z.object({
     }),
   ),
 });
+/** Quiz rédigé par l’IA. */
 export type QuizGen = z.infer<typeof QuizGenSchema>;
 
+/** Correction d’une réponse courte de quiz. */
 export const OpenGradeSchema = z.object({
   correct: z.boolean(),
   feedbackMd: z.string(),
 });
-export type OpenGrade = z.infer<typeof OpenGradeSchema>;
 
+/** EI blanche rédigée par l’IA, avec barème et solutions. */
 export const EiGenSchema = z.object({
   title: z.string(),
   durationMinutes: z.number(),
@@ -180,10 +195,12 @@ export const EiGenSchema = z.object({
     }),
   ),
 });
+/** EI blanche rédigée par l’IA. */
 export type EiGen = z.infer<typeof EiGenSchema>;
 
-export const NotionKindEnum = z.enum(['concept', 'definition', 'theoreme', 'propriete', 'methode', 'formule']);
+const NotionKindEnum = z.enum(['concept', 'definition', 'theoreme', 'propriete', 'methode', 'formule']);
 
+/** Notions d’un chapitre, avec leurs sous-notions et prérequis. */
 export const NotionMapSchema = z.object({
   notions: z.array(
     z.object({
@@ -197,4 +214,5 @@ export const NotionMapSchema = z.object({
     }),
   ),
 });
+/** Carte des notions d’un chapitre, telle que renvoyée par l’IA. */
 export type NotionMap = z.infer<typeof NotionMapSchema>;

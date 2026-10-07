@@ -1,15 +1,19 @@
+// Bilan de fin de séance : note (EI), points forts, points bloquants, quiz de révision proposé et détail de chaque question.
+// Exportable en PDF (impression du navigateur, blocs dépliés).
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { SESSION_MODE_LABELS, UNIT_KIND_LABELS, type QuizDto, type ReportDto, type ReportQuestion } from '@tpassist/shared';
-import clsx from 'clsx';
+import { SESSION_MODE_LABELS, UNIT_KIND_LABELS, type QuestionStatus, type QuizDto, type ReportDto, type ReportQuestion } from '@tpassist/shared';
 import { CheckCircle2, Clock, Download, Flame, MinusCircle, Sparkles, ThumbsUp, XCircle } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
+import { AnswerView, VerdictTag } from '../components/attempts';
 import { Markdown } from '../components/Markdown';
-import { Button, Callout, ErrorBox, Spinner, Tag, Toggle } from '../components/ui';
+import { QuestionStatement } from '../components/QuestionStatement';
+import { Button, Callout, ErrorBox, Page, Spinner, Tag, Toggle, type Tone } from '../components/ui';
 import { api } from '../lib/api';
 import { useBreadcrumbs } from '../lib/breadcrumbs';
-import { formatDate, formatMinutes } from '../lib/format';
+import { formatDate, formatMinutes, plural } from '../lib/format';
 
+/** Imprime le bilan (ou l’enregistre en PDF) avec toutes les questions dépliées. */
 function exportPdf() {
   // Les blocs repliés sont dépliés pour l'impression, puis restaurés.
   const closed = [...document.querySelectorAll('details:not([open])')] as HTMLDetailsElement[];
@@ -22,6 +26,7 @@ function exportPdf() {
   window.print();
 }
 
+/** Bilan (route /reports/:reportId). */
 export function ReportView() {
   const { reportId } = useParams<{ reportId: string }>();
   const navigate = useNavigate();
@@ -31,8 +36,7 @@ export function ReportView() {
     refetchInterval: (q) => (q.state.data?.status === 'pending' ? 2500 : false),
   });
   const r = report.data;
-  const course = useQuery({ queryKey: ['course-name', r?.courseId], queryFn: () => api.get<{ course: { name: string } }>(`/api/courses/${r!.courseId}`), enabled: Boolean(r?.courseId) });
-  useBreadcrumbs(r ? [{ label: course.data?.course.name ?? 'Cours', to: `/courses/${r.courseId}` }, { label: `Bilan · ${r.unitTitle}` }] : []);
+  useBreadcrumbs(r ? [{ label: r.courseName, to: `/courses/${r.courseId}` }, { label: `Bilan · ${r.unitTitle}` }] : []);
 
   const reviewQuiz = useMutation({
     mutationFn: () => api.post<QuizDto>(`/api/sessions/${r!.sessionId}/review-quiz`),
@@ -40,23 +44,23 @@ export function ReportView() {
   });
   const retry = useMutation({ mutationFn: () => api.post(`/api/sessions/${r!.sessionId}/report/retry`), onSuccess: () => report.refetch() });
 
-  if (report.isLoading) return <Doc><Spinner label="Chargement du bilan…" /></Doc>;
-  if (report.error || !r) return <Doc><ErrorBox error={report.error ?? 'Bilan introuvable'} /></Doc>;
+  if (report.isLoading) return <Page width="document"><Spinner label="Chargement du bilan…" /></Page>;
+  if (report.error || !r) return <Page width="document"><ErrorBox error={report.error ?? 'Bilan introuvable'} /></Page>;
 
   if (r.status === 'pending') {
     return (
-      <Doc>
+      <Page width="document">
         <div className="flex flex-col items-center gap-3 py-16 text-center">
           <Spinner />
           <h1 className="text-xl font-semibold tracking-tight">Bilan en préparation…</h1>
           <p className="max-w-md text-sm text-ink-3">L’IA reprend chaque question, tes réponses et tes erreurs. Cela prend une ou deux minutes.</p>
         </div>
-      </Doc>
+      </Page>
     );
   }
   if (r.status === 'error') {
     return (
-      <Doc>
+      <Page width="document">
         <Callout
           tone="red"
           icon={<XCircle className="size-4" />}
@@ -69,7 +73,7 @@ export function ReportView() {
         >
           <p className="text-sm">{r.error}</p>
         </Callout>
-      </Doc>
+      </Page>
     );
   }
 
@@ -81,7 +85,7 @@ export function ReportView() {
   const totalTime = r.questions.reduce((a, q) => a + q.activeMs, 0);
 
   return (
-    <Doc>
+    <Page width="document">
       <header className="mb-12">
         <p className="text-sm text-ink-3">
           Bilan · {UNIT_KIND_LABELS[r.unitKind]}
@@ -100,11 +104,9 @@ export function ReportView() {
               <span className="text-lg text-ink-3">/20</span>
             </p>
           )}
-          <Stat icon={<CheckCircle2 className="size-4 text-green-600" />}>{counts.correct} juste{counts.correct > 1 ? 's' : ''}</Stat>
-          <Stat icon={<XCircle className="size-4 text-red-600" />}>{counts.wrong} fausse{counts.wrong > 1 ? 's' : ''}</Stat>
-          <Stat icon={<MinusCircle className="size-4 text-yellow-600" />}>
-            {counts.skipped} passée{counts.skipped > 1 ? 's' : ''}
-          </Stat>
+          <Stat icon={<CheckCircle2 className="size-4 text-green-600" />}>{plural(counts.correct, 'juste')}</Stat>
+          <Stat icon={<XCircle className="size-4 text-red-600" />}>{plural(counts.wrong, 'fausse')}</Stat>
+          <Stat icon={<MinusCircle className="size-4 text-yellow-600" />}>{plural(counts.skipped, 'passée')}</Stat>
           <Stat icon={<Clock className="size-4 text-ink-4" />}>{formatMinutes(totalTime)} de travail</Stat>
         </div>
       </header>
@@ -145,12 +147,8 @@ export function ReportView() {
           <QuestionReport key={q.questionId} q={q} />
         ))}
       </div>
-    </Doc>
+    </Page>
   );
-}
-
-function Doc({ children }: { children: ReactNode }) {
-  return <div className="mx-auto max-w-3xl px-4 pt-12 pb-24 sm:px-6">{children}</div>;
 }
 
 function Stat({ icon, children }: { icon: ReactNode; children: ReactNode }) {
@@ -162,6 +160,7 @@ function Stat({ icon, children }: { icon: ReactNode; children: ReactNode }) {
   );
 }
 
+/** Quiz de révision facultatif : proposé à la fin du bilan, préparé seulement si l'étudiant le lance. */
 function ReviewQuizProposal({ report, onStart, starting, error }: { report: ReportDto; onStart: () => void; starting: boolean; error: unknown }) {
   const navigate = useNavigate();
   const { reviewQuiz } = report;
@@ -204,14 +203,17 @@ function ReviewQuizProposal({ report, onStart, starting, error }: { report: Repo
   );
 }
 
-const STATUS_TAG: Record<string, { label: string; tone: 'green' | 'red' | 'yellow'; icon: ReactNode }> = {
+const STATUS_TAG = {
   correct: { label: 'Juste', tone: 'green', icon: <CheckCircle2 className="size-3" /> },
   wrong: { label: 'Faux', tone: 'red', icon: <XCircle className="size-3" /> },
   other: { label: 'Sans réponse', tone: 'yellow', icon: <MinusCircle className="size-3" /> },
-};
+} satisfies Record<string, { label: string; tone: Tone; icon: ReactNode }>;
 
+const statusTag = (status: QuestionStatus) => STATUS_TAG[status === 'correct' || status === 'wrong' ? status : 'other'];
+
+/** Détail d'une question (replié) : énoncé, réponses et erreurs, explications et solution. */
 function QuestionReport({ q }: { q: ReportQuestion }) {
-  const st = STATUS_TAG[q.status === 'correct' || q.status === 'wrong' ? q.status : 'other'];
+  const st = statusTag(q.status);
   return (
     <Toggle
       className="print-break"
@@ -235,12 +237,7 @@ function QuestionReport({ q }: { q: ReportQuestion }) {
     >
       <div className="max-w-[65ch] space-y-6 pb-8">
         <div className="space-y-2">
-          {q.contextMd.trim() && (
-            <div className="rounded-lg bg-block px-4 py-3">
-              <Markdown className="text-sm">{q.contextMd}</Markdown>
-            </div>
-          )}
-          <Markdown>{q.statementMd}</Markdown>
+          <QuestionStatement contextMd={q.contextMd} statementMd={q.statementMd} compact />
           <p className="text-xs text-ink-3">
             {formatMinutes(q.activeMs)} · {q.helps.length ? q.helps.join(' · ') : 'aucune aide'}
           </p>
@@ -252,23 +249,9 @@ function QuestionReport({ q }: { q: ReportQuestion }) {
             {q.attempts.map((a, i) => (
               <div key={i} className="space-y-2">
                 <p className="flex items-center gap-2 text-xs text-ink-3">
-                  Essai {i + 1}
-                  {a.verdict !== 'pending' && (
-                    <Tag tone={a.verdict === 'correct' ? 'green' : 'red'}>
-                      {a.verdict === 'correct' ? <CheckCircle2 className="size-3" /> : <XCircle className="size-3" />}
-                      {a.verdict === 'correct' ? 'juste' : a.verdict === 'partiel' ? 'incomplet' : 'faux'}
-                    </Tag>
-                  )}
+                  Essai {i + 1} <VerdictTag verdict={a.verdict} />
                 </p>
-                <div className={clsx('rounded-lg bg-block px-4 py-3', a.type !== 'text' && 'font-mono text-sm')}>
-                  {a.type === 'image' && a.imageUrl ? (
-                    <img src={a.imageUrl} alt="" className="max-h-64 rounded" />
-                  ) : a.type === 'code' ? (
-                    <pre className="overflow-auto whitespace-pre-wrap">{a.code}</pre>
-                  ) : (
-                    <Markdown className="text-sm">{a.text ?? ''}</Markdown>
-                  )}
-                </div>
+                <AnswerView answer={a} />
                 {(a.errorLocation || a.errorExplanation) && (
                   <Callout tone="red" icon={<XCircle className="size-4" />}>
                     {a.errorLocation && <p className="text-sm">Erreur : « {a.errorLocation} »</p>}

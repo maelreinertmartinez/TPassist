@@ -9,7 +9,7 @@ import { deleteUnits, insertSection } from '../src/db/repo';
 import { courses, jobs, units } from '../src/db/schema';
 import { generateNotions, sanitizeNotions } from '../src/jobs/generateNotions';
 import type { JobRow } from '../src/jobs/queue';
-import { getNotionMap, matchWeakPoints, requestNotionMap, streamNotionDetail } from '../src/services/notions';
+import { getNotionDetail, getNotionMap, matchWeakPoints, requestNotionMap, streamNotionDetail } from '../src/services/notions';
 
 const raw = (o: Partial<Parameters<typeof sanitizeNotions>[0][number]>) => ({
   key: 'a',
@@ -105,8 +105,8 @@ describe('génération de la carte des notions', () => {
     const after = getNotionMap(courseId).notions;
     const again = after.find((n) => n.title === 'Base et dimension')!;
     expect(again.id).not.toBe(base.id);
-    expect(again.hasDetail).toBe(true);
-    expect(after.filter((n) => n.hasDetail)).toHaveLength(1);
+    expect(getNotionDetail(again.id).detailMd).toBeTruthy();
+    expect(after.filter((n) => getNotionDetail(n.id).detailMd)).toHaveLength(1);
   });
 
   it('signale une carte périmée quand les chapitres changent', async () => {

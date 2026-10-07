@@ -1,3 +1,5 @@
+// Boutons « successifs » du lecteur : un bouton d'aide (cours → indice → solution) et un bouton d'erreur
+// (montrer → expliquer → solution), avec leurs comptes à rebours.
 import { nextErrorStep, nextHelpStep, type AttemptDto, type HelpEventDto, type HelpKind, type LockInfo, type LocksDto } from '@tpassist/shared';
 import { BookOpen, CheckCircle2, Eye, Lightbulb, SearchCheck } from 'lucide-react';
 import clsx from 'clsx';

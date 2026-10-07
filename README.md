@@ -108,13 +108,36 @@ npm run lint:design   # refuse les valeurs hors système (tailles arbitraires, g
 ### Architecture
 
 ```
-apps/server   Fastify + Claude Agent SDK + SQLite (Drizzle)
-  src/ai/         runAgent() (seul point d'appel au SDK), prompts, schémas Zod des sorties, outils MCP du cours
-  src/jobs/       file de tâches : analyse PDF, rattachement des corrigés, bilans, quiz, génération d'EI
-  src/services/   sessions & verrous, aides, chat, quiz, points bloquants, éditeur
-apps/web      React + Vite + Tailwind, rendu Markdown/KaTeX, CodeMirror
-packages/shared  types partagés API ↔ front
+packages/shared     types des échanges API ↔ front, un fichier par domaine (cours, séances, bilans, quiz, notions…),
+                    constantes et fonctions pures communes (étapes des boutons d'aide, libellés, stripAccents)
+apps/server         Fastify + Claude Agent SDK + SQLite (Drizzle)
+  src/errors.ts       erreurs métier portant un statut HTTP (HttpError, notFound)
+  src/utils.ts        petits utilitaires génériques (chunk, range, groupBy, dedupe…)
+  src/db/             connexion et migrations, schéma, requêtes réutilisées (findById, nextOrder, courseUnits…)
+  src/ai/             runAgent() (seul point d'appel au SDK), prompts, schémas Zod des sorties, outils MCP du cours
+  src/ingest/         assemblage des résultats d'analyse des PDF (fonctions pures) et heuristiques de simulation
+  src/pdf/            lecture et rendu des PDF (poppler)
+  src/jobs/           file de tâches de fond et ses gestionnaires : analyse PDF, corrigés, bilans, quiz, EI, notions
+  src/services/       logique métier par domaine : cours, documents, séances (+ verrous), aides du tuteur, chat,
+                      bilans, quiz, points bloquants, notions, éditeur, images, statistiques
+  src/http/           routes (lecture de la requête puis délégation aux services) et diffusion SSE
+  test/               tests Vitest (base SQLite en mémoire, IA simulée)
+apps/web            React + Vite + Tailwind, rendu Markdown/KaTeX, CodeMirror, React Flow
+  src/components/ui/  système de design : boutons, retours, formulaires, mise en page, fenêtres et tiroirs
+  src/components/     composants partagés (chat, zone de réponse, aides, réponses, apparence d'un cours…)
+  src/lib/            client API et SSE, mise en forme, images, fil d'Ariane, icônes des cours, plein écran
+  src/pages/          une page par route ; les grandes pages ont leur dossier (course/, session/, quiz/, editor/, stats/),
+                      avec la logique dans un hook (ex. useSession) et l'affichage découpé en composants
 ```
+
+Règles suivies dans le code :
+- **Une responsabilité par module** : les routes ne contiennent aucune règle métier, les services ne dépendent pas de Fastify.
+- **Pas de duplication** : les requêtes, composants et utilitaires répétés vivent à un seul endroit (`db/repo.ts`,
+  `components/ui/`, `lib/`, `packages/shared`).
+- **Ouvert à l'extension** : ajouter un type de tâche, une aide ou une catégorie revient à ajouter une entrée dans une table
+  (`registerJobHandler`, `HELP_ACTIONS`, `TASK_LABELS`), sans toucher à la logique.
+- **Documentation** : chaque fichier commence par un commentaire qui décrit son rôle, chaque export a sa JSDoc.
+- **Code mort** : `noUnusedLocals` et `noUnusedParameters` sont activés ; le compilateur refuse les imports et variables inutilisés.
 
 Chaque appel IA passe par `query()` du Claude Agent SDK, isolé de toute configuration locale
 (`settingSources: []`, aucun outil intégré, seuls les outils MCP de lecture du cours sont autorisés),

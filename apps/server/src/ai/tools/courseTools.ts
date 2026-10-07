@@ -1,14 +1,17 @@
+// Outils MCP en lecture seule donnés à l'IA pour explorer le cours (liste et recherche des sections, lecture d'une
+// section) et, pendant une séance, la liste des questions du sujet ouvert (jamais leurs solutions).
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { and, asc, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { db, ftsSearch } from '../../db/client';
-import { courseSections, exercises, questions, units } from '../../db/schema';
+import { exercisesWithQuestions } from '../../db/repo';
+import { courseSections, units } from '../../db/schema';
 
 const text = (value: unknown) => ({
   content: [{ type: 'text' as const, text: typeof value === 'string' ? value : JSON.stringify(value, null, 1) }],
 });
 
-export interface CourseToolsOptions {
+interface CourseToolsOptions {
   courseId: string;
   /** Unité ouverte (TP/TD/EI) : expose get_unit_outline. */
   unitId?: string;
@@ -77,15 +80,11 @@ export function courseToolsServer({ courseId, unitId }: CourseToolsOptions) {
         'Donne la liste des exercices et questions (énoncés uniquement, sans solution) du TD/TP/EI ouvert.',
         {},
         async () => {
-          const exs = db.select().from(exercises).where(eq(exercises.unitId, unitId)).orderBy(asc(exercises.order)).all();
-          const qs = db.select().from(questions).where(eq(questions.unitId, unitId)).orderBy(asc(questions.order)).all();
           return text(
-            exs.map((e) => ({
-              exercise: e.title,
-              context: e.contextMd,
-              questions: qs
-                .filter((q) => q.exerciseId === e.id)
-                .map((q) => ({ id: q.id, label: q.label, statement: q.statementMd })),
+            exercisesWithQuestions(unitId).map(({ ex, questions }) => ({
+              exercise: ex.title,
+              context: ex.contextMd,
+              questions: questions.map((q) => ({ id: q.id, label: q.label, statement: q.statementMd })),
             })),
           );
         },

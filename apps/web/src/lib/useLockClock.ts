@@ -1,3 +1,4 @@
+// Comptes à rebours des aides verrouillées, entre deux signaux de présence.
 import type { LockInfo, LocksDto } from '@tpassist/shared';
 import { useEffect, useRef, useState } from 'react';
 

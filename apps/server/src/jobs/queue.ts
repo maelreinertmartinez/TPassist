@@ -1,11 +1,17 @@
+// File de tâches de fond persistée en base : au plus MAX_PARALLEL tâches à la fois, reprise après redémarrage.
+// Chaque type de tâche enregistre son gestionnaire (registerJobHandler) : ajouter un type ne modifie pas la file.
 import { and, asc, eq, inArray } from 'drizzle-orm';
-import type { JobType } from '@tpassist/shared';
+import type { JobDto, JobType } from '@tpassist/shared';
 import { db, newId } from '../db/client';
 import { jobs } from '../db/schema';
+import { errorText } from '../utils';
 
+/** Tâche telle qu’enregistrée en base. */
 export type JobRow = typeof jobs.$inferSelect;
 
+/** Ce qu'une tâche peut faire pendant son exécution. */
 export interface JobContext {
+  /** Avancement entre 0 et 1, avec un message optionnel affiché à l'utilisateur. */
   progress(progress: number, message?: string): void;
 }
 
@@ -16,10 +22,12 @@ const MAX_PARALLEL = 2;
 let running = 0;
 let timer: NodeJS.Timeout | null = null;
 
+/** Associe un gestionnaire à un type de tâche (appelé à l'import de chaque module de tâche). */
 export function registerJobHandler(type: JobType, handler: Handler) {
   handlers.set(type, handler);
 }
 
+/** Ajoute une tâche à la file et réveille le traitement. */
 export function enqueueJob(input: { type: JobType; courseId?: string | null; refId?: string | null; payload?: Record<string, unknown> }): JobRow {
   const row = db
     .insert(jobs)
@@ -46,6 +54,7 @@ export function hasPendingJob(type: JobType, key: { courseId?: string; refId?: s
   return Boolean(db.select({ id: jobs.id }).from(jobs).where(and(...conds)).get());
 }
 
+/** Relance une tâche en erreur ; undefined si elle n'existe pas ou n'est pas en erreur. */
 export function retryJob(id: string): JobRow | undefined {
   const row = db
     .update(jobs)
@@ -88,7 +97,7 @@ function pump() {
       .then(() => update(next.id, { status: 'done', progress: 1, message: 'Terminé' }))
       .catch((err: unknown) => {
         console.error(`[job ${next.type} ${next.id}]`, err);
-        update(next.id, { status: 'error', error: err instanceof Error ? err.message : String(err), message: 'Échec' });
+        update(next.id, { status: 'error', error: errorText(err), message: 'Échec' });
       })
       .finally(() => {
         running--;
@@ -97,10 +106,16 @@ function pump() {
   }
 }
 
+/** Démarre le traitement de la file (les tâches interrompues par un arrêt repartent). */
 export function startJobWorker() {
   // Les jobs interrompus par un redémarrage repartent.
   db.update(jobs).set({ status: 'queued', message: 'Reprise après redémarrage…' }).where(eq(jobs.status, 'running')).run();
   kick();
   // Filet de sécurité.
   setInterval(() => kick(), 5_000).unref();
+}
+
+/** Tâche telle que l'affiche le front. */
+export function jobDto(j: JobRow): JobDto {
+  return { id: j.id, type: j.type, status: j.status, progress: j.progress, message: j.message, error: j.error, refId: j.refId, createdAt: j.createdAt, updatedAt: j.updatedAt };
 }

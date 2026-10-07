@@ -1,3 +1,4 @@
+// Suppression d'un cours après confirmation.
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useConfirm } from '../components/ui';
 import { api } from './api';

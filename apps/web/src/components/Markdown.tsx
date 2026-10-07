@@ -1,3 +1,4 @@
+// Rendu Markdown + LaTeX (KaTeX) de tous les contenus rédigés par l'IA ou l'étudiant.
 import clsx from 'clsx';
 import { memo } from 'react';
 import ReactMarkdown from 'react-markdown';
@@ -12,6 +13,7 @@ function normalizeMath(src: string): string {
     .replace(/\\\(([\s\S]+?)\\\)/g, (_, m) => `$${m.trim()}$`);
 }
 
+/** Markdown avec formules ; une erreur de LaTeX n'empêche jamais l'affichage. */
 export const Markdown = memo(function Markdown({ children, className }: { children: string; className?: string }) {
   return (
     <div className={clsx('md', className)}>

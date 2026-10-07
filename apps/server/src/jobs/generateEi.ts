@@ -1,20 +1,26 @@
-import { and, asc, eq, inArray } from 'drizzle-orm';
+// Tâche « generate_ei » : rédige une EI blanche inédite dans le style des EI existantes du cours,
+// en donnant au moins 60 % du barème aux points bloquants. Les solutions sont mises en cache pour le bilan.
+import { eq, inArray } from 'drizzle-orm';
 import { runAgent } from '../ai/agent';
 import { PROMPTS } from '../ai/prompts';
 import { EiGenSchema, type EiGen } from '../ai/schemas';
 import { courseToolsServer } from '../ai/tools/courseTools';
 import { db, newId } from '../db/client';
-import { insertExercises, nextUnitOrder, orderedQuestions } from '../db/repo';
+import { courseUnits, exercisesWithQuestions, insertExercises, nextOrder } from '../db/repo';
 import { courseSections, questions, units } from '../db/schema';
 import { setCache } from '../services/tutor';
-import { weakPointsForPrompt } from '../services/weakPoints';
-import { allocateWeakPointItems, WEAK_POINT_SHARE } from './generateQuiz';
+import { allocateWeakPointItems, WEAK_POINT_SHARE, weakPointsForPrompt } from '../services/weakPoints';
 import { registerJobHandler, type JobContext, type JobRow } from './queue';
+
+/** Barème total d'une EI. */
+const EI_TOTAL_POINTS = 20;
+/** Nombre d'EI existantes données en modèle. */
+const MAX_MODELS = 4;
 
 function mockEi(wps: { id: string; notion: string }[]): EiGen {
   const q = (label: string, i: number) => ({
     label,
-    statementMd: `(Simulation) Question ${label} : applique la méthode du cours${wps[i % Math.max(1, wps.length)] ? ` sur « ${wps[i % wps.length].notion} »` : ''}.`,
+    statementMd: `(Simulation) Question ${label} : applique la méthode du cours${wps.length ? ` sur « ${wps[i % wps.length].notion} »` : ''}.`,
     points: 5,
     solutionMd: `Solution simulée de la question ${label}.`,
     weakPointId: wps.length && i < 3 ? wps[i % wps.length].id : null,
@@ -29,50 +35,52 @@ function mockEi(wps: { id: string; notion: string }[]): EiGen {
   };
 }
 
+/** EI existantes données en modèle à l'IA (énoncés tronqués, barème). */
+function modelsJson(models: (typeof units.$inferSelect)[]) {
+  return models.map((u) => ({
+    title: u.title,
+    durationMinutes: u.meta.durationMinutes ?? null,
+    exercises: exercisesWithQuestions(u.id)
+      .filter(({ questions: qs }) => qs.length > 0)
+      .map(({ ex, questions: qs }) => ({
+        title: ex.title,
+        context: ex.contextMd.slice(0, 1500),
+        questions: qs.map((q) => ({ label: q.label, statement: q.statementMd.slice(0, 700), points: q.points })),
+      })),
+  }));
+}
+
+/** Exemples de questions de TD/TP du cours (types d'exercices vus). */
+function tdtpExamples(courseId: string) {
+  const tdtp = courseUnits(courseId, ['td', 'tp']);
+  if (tdtp.length === 0) return [];
+  return db
+    .select({ label: questions.label, statement: questions.statementMd, unitId: questions.unitId })
+    .from(questions)
+    .where(inArray(questions.unitId, tdtp.map((u) => u.id)))
+    .limit(60)
+    .all()
+    .map((q) => ({ sujet: tdtp.find((u) => u.id === q.unitId)?.title, question: `${q.label}. ${q.statement.slice(0, 200)}` }));
+}
+
 async function generateEi(job: JobRow, ctx: JobContext) {
   const courseId = job.courseId!;
   const difficulty = String(job.payload.difficulty ?? 'standard');
   const sectionIds = Array.isArray(job.payload.sectionIds) ? (job.payload.sectionIds as string[]) : [];
 
   ctx.progress(0.05, 'Analyse des EI existantes…');
-  const eiUnits = db
-    .select()
-    .from(units)
-    .where(and(eq(units.courseId, courseId), eq(units.kind, 'ei')))
-    .orderBy(asc(units.order))
-    .all();
-  const models = (eiUnits.some((u) => u.origin === 'imported') ? eiUnits.filter((u) => u.origin === 'imported') : eiUnits).slice(0, 4);
+  const eiUnits = courseUnits(courseId, ['ei']);
+  // Les EI importées sont les meilleurs modèles ; à défaut, les EI déjà générées.
+  const imported = eiUnits.filter((u) => u.origin === 'imported');
+  const models = (imported.length ? imported : eiUnits).slice(0, MAX_MODELS);
   if (models.length === 0) throw new Error('Ajoute au moins une EI au cours pour pouvoir en générer de nouvelles.');
 
-  const modelsJson = models.map((u) => {
-    const rows = orderedQuestions(u.id);
-    const exs = new Map<string, { title: string; context: string; questions: { label: string; statement: string; points: number | null }[] }>();
-    for (const { q, ex } of rows) {
-      if (!exs.has(ex.id)) exs.set(ex.id, { title: ex.title, context: ex.contextMd.slice(0, 1500), questions: [] });
-      exs.get(ex.id)!.questions.push({ label: q.label, statement: q.statementMd.slice(0, 700), points: q.points });
-    }
-    return { title: u.title, durationMinutes: u.meta.durationMinutes ?? null, exercises: [...exs.values()] };
-  });
-
-  const tdtp = db
-    .select({ id: units.id, title: units.title })
-    .from(units)
-    .where(and(eq(units.courseId, courseId), inArray(units.kind, ['td', 'tp'])))
-    .all();
-  const tdtpQuestions = tdtp.length
-    ? db
-        .select({ label: questions.label, statement: questions.statementMd, unitId: questions.unitId })
-        .from(questions)
-        .where(inArray(questions.unitId, tdtp.map((u) => u.id)))
-        .limit(60)
-        .all()
-        .map((q) => ({ sujet: tdtp.find((u) => u.id === q.unitId)?.title, question: `${q.label}. ${q.statement.slice(0, 200)}` }))
-    : [];
+  const examples = tdtpExamples(courseId);
   const focus = sectionIds.length
     ? db.select({ id: courseSections.id, title: courseSections.title }).from(courseSections).where(inArray(courseSections.id, sectionIds)).all()
     : [];
   const wps = weakPointsForPrompt(courseId, 12);
-  const allocation = allocateWeakPointItems(wps, Math.round(20 * WEAK_POINT_SHARE));
+  const allocation = allocateWeakPointItems(wps, Math.round(EI_TOTAL_POINTS * WEAK_POINT_SHARE));
 
   const content = [
     `Difficulté souhaitée : ${difficulty}.`,
@@ -80,8 +88,8 @@ async function generateEi(job: JobRow, ctx: JobContext) {
     wps.length
       ? `Points bloquants à privilégier (au moins 60 % du barème ; points de barème indicatifs par point bloquant : ${JSON.stringify(allocation)}) :\n${JSON.stringify(wps, null, 1)}`
       : 'Aucun point bloquant actif.',
-    `EI existantes (modèles de style, de structure et de barème) :\n${JSON.stringify(modelsJson, null, 1)}`,
-    tdtpQuestions.length ? `Exemples de questions de TD/TP (types d'exercices vus) :\n${JSON.stringify(tdtpQuestions, null, 1)}` : '',
+    `EI existantes (modèles de style, de structure et de barème) :\n${JSON.stringify(modelsJson(models), null, 1)}`,
+    examples.length ? `Exemples de questions de TD/TP (types d'exercices vus) :\n${JSON.stringify(examples, null, 1)}` : '',
   ]
     .filter(Boolean)
     .join('\n\n');
@@ -110,7 +118,7 @@ async function generateEi(job: JobRow, ctx: JobContext) {
       documentId: null,
       kind: 'ei',
       title: r.data.title || `EI blanche générée n°${generatedCount}`,
-      order: nextUnitOrder(courseId),
+      order: nextOrder(units.order, eq(units.courseId, courseId)),
       origin: 'generated',
       meta: { durationMinutes: r.data.durationMinutes, generation: { difficulty, sectionIds, basedOn: models.map((m) => m.id) } },
     })

@@ -1,3 +1,4 @@
+// Lecture des PDF avec poppler (pdfinfo, pdftotext, pdftoppm) : nombre de pages, texte et rendu des pages en PNG.
 import { execFile } from 'node:child_process';
 import { mkdir, readdir, readFile, rename } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -6,7 +7,8 @@ import { config } from '../config';
 
 const exec = promisify(execFile);
 
-export class PdfToolError extends Error {}
+/** Outil poppler absent ou en échec. */
+class PdfToolError extends Error {}
 
 async function run(cmd: string, args: string[]) {
   try {
@@ -20,6 +22,7 @@ async function run(cmd: string, args: string[]) {
   }
 }
 
+/** Nombre de pages d'un PDF. */
 export async function pdfPageCount(pdfPath: string): Promise<number> {
   const { stdout } = await run('pdfinfo', [pdfPath]);
   const m = /Pages:\s+(\d+)/.exec(stdout);
@@ -35,10 +38,12 @@ export async function pdfPagesText(pdfPath: string): Promise<string[]> {
   return pages.map((p) => p.replace(/[ \t]+$/gm, '').trim());
 }
 
+/** Chemin du rendu PNG d'une page (`full` : 1600 px, `thumb` : 900 px). */
 export function pageImagePath(documentId: string, page: number, variant: 'full' | 'thumb' = 'full') {
   return join(config.pagesDir, documentId, `${variant === 'full' ? 'p' : 't'}-${page}.png`);
 }
 
+/** URL publique du rendu pleine résolution d'une page. */
 export function pageImageUrl(documentId: string, page: number) {
   return `/api/documents/${documentId}/pages/${page}.png`;
 }
@@ -62,6 +67,7 @@ export async function renderPages(pdfPath: string, documentId: string): Promise<
   }
 }
 
+/** Rendu d'une page en base64, pour l'envoyer à l'IA. */
 export async function readPageBase64(documentId: string, page: number, variant: 'full' | 'thumb'): Promise<string> {
   const buf = await readFile(pageImagePath(documentId, page, variant));
   return buf.toString('base64');

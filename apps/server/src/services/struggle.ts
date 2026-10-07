@@ -1,3 +1,4 @@
+// Mesure de la difficulté rencontrée sur une question (fonctions pures, sans accès à la base).
 import type { QuestionFlags } from '@tpassist/shared';
 
 /** Poids de difficulté d'une question à partir des aides utilisées et des erreurs. */
@@ -13,6 +14,7 @@ export function struggleWeight(f: QuestionFlags): number {
   );
 }
 
+/** Vrai si l'étudiant a eu la moindre difficulté sur la question. */
 export function isStruggle(f: QuestionFlags): boolean {
   return struggleWeight(f) > 0;
 }

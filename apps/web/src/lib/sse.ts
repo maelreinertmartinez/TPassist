@@ -1,6 +1,9 @@
+// Lecture des réponses diffusées au fil de l'eau (Server-Sent Events) par l'API.
 import { ApiError } from './api';
 
-export interface SseHandlers<T> {
+/** Réactions à la diffusion. */
+export interface SseHandlers {
+  /** Morceau de texte reçu. */
   onDelta?: (text: string) => void;
   signal?: AbortSignal;
 }
@@ -9,7 +12,7 @@ export interface SseHandlers<T> {
  * Envoie une requête POST et lit la réponse en Server-Sent Events.
  * Résout avec la charge de l'événement `done`, rejette sur `error`.
  */
-export async function postSse<T>(url: string, body: unknown, handlers: SseHandlers<T> = {}): Promise<T> {
+export async function postSse<T>(url: string, body: unknown, handlers: SseHandlers = {}): Promise<T> {
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },

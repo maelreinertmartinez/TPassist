@@ -1,20 +1,26 @@
+// Quiz : création (générée en tâche de fond par jobs/generateQuiz), réponses, correction des questions ouvertes,
+// reprise et relance. Chaque réponse sur une question liée à un point bloquant fait évoluer ce point.
 import { asc, desc, eq, inArray } from 'drizzle-orm';
 import type { QuizDto, QuizItemDto, QuizKind, QuizSummary } from '@tpassist/shared';
 import { runAgent } from '../ai/agent';
 import { PROMPTS } from '../ai/prompts';
 import { OpenGradeSchema } from '../ai/schemas';
 import { db, newId } from '../db/client';
-import { HttpError, notFound } from '../db/repo';
-import { quizItems, quizzes, sessionQuestions, sessions, units, weakPoints } from '../db/schema';
+import { findById } from '../db/repo';
+import { courses, quizItems, quizzes, sessionQuestions, sessions, units, weakPoints } from '../db/schema';
+import { HttpError, notFound } from '../errors';
 import { enqueueJob } from '../jobs/queue';
 import { reviewQuizSize } from './struggle';
 import { recordOutcome } from './weakPoints';
 
 type ItemRow = typeof quizItems.$inferSelect;
 
+/** Tailles proposées pour le quiz complet. */
 const SIZES = { court: 10, moyen: 20, long: 30 } as const;
+/** Taille de quiz complet proposée. */
 export type CourseQuizSize = keyof typeof SIZES;
 
+/** Question de quiz pour le front : la bonne réponse et l'explication restent cachées tant qu'elle n'est pas répondue. */
 function itemDto(it: ItemRow, notions: Map<string, string>): QuizItemDto {
   const answered = it.answeredAt !== null;
   return {
@@ -35,8 +41,9 @@ function itemDto(it: ItemRow, notions: Map<string, string>): QuizItemDto {
   };
 }
 
+/** Quiz complet avec ses questions. 404 s'il n'existe pas. */
 export function getQuiz(id: string): QuizDto {
-  const q = db.select().from(quizzes).where(eq(quizzes.id, id)).get() ?? notFound('Quiz');
+  const q = findById(quizzes, id, 'Quiz');
   const items = db.select().from(quizItems).where(eq(quizItems.quizId, id)).orderBy(asc(quizItems.order)).all();
   const wpIds = [...new Set(items.map((i) => i.weakPointId).filter((x): x is string => Boolean(x)))];
   const notions = new Map(
@@ -45,6 +52,7 @@ export function getQuiz(id: string): QuizDto {
   return {
     id: q.id,
     courseId: q.courseId,
+    courseName: findById(courses, q.courseId, 'Cours').name,
     kind: q.kind,
     title: q.title,
     status: q.status,
@@ -56,6 +64,7 @@ export function getQuiz(id: string): QuizDto {
   };
 }
 
+/** Quiz d'un cours pour l'historique, du plus récent au plus ancien. */
 export function listQuizzes(courseId: string): QuizSummary[] {
   return db
     .select()
@@ -66,6 +75,7 @@ export function listQuizzes(courseId: string): QuizSummary[] {
     .map((q) => ({ id: q.id, kind: q.kind, title: q.title, status: q.status, score: q.score, total: q.total, createdAt: q.createdAt }));
 }
 
+/** Crée un quiz vide et lance sa génération. */
 function createQuiz(courseId: string, kind: QuizKind, title: string, size: number, sessionId: string | null) {
   const id = newId();
   db.insert(quizzes).values({ id, courseId, kind, title, sessionId, status: 'generating', total: size }).run();
@@ -73,6 +83,7 @@ function createQuiz(courseId: string, kind: QuizKind, title: string, size: numbe
   return getQuiz(id);
 }
 
+/** Quiz complet sur tout le cours (10, 20 ou 30 questions). */
 export function createCourseQuiz(courseId: string, size: CourseQuizSize) {
   const n = SIZES[size] ?? SIZES.court;
   return createQuiz(courseId, 'course_full', `Quiz complet (${n} questions)`, n, null);
@@ -80,12 +91,12 @@ export function createCourseQuiz(courseId: string, size: CourseQuizSize) {
 
 /** Quiz de révision facultatif d'une session (créé une seule fois, à la demande). */
 export function createReviewQuiz(sessionId: string) {
-  const s = db.select().from(sessions).where(eq(sessions.id, sessionId)).get() ?? notFound('Session');
+  const s = findById(sessions, sessionId, 'Session');
   if (s.reviewQuizId) {
     const existing = db.select().from(quizzes).where(eq(quizzes.id, s.reviewQuizId)).get();
     if (existing && existing.status !== 'error') return getQuiz(existing.id);
   }
-  const unit = db.select().from(units).where(eq(units.id, s.unitId)).get() ?? notFound('Partie');
+  const unit = findById(units, s.unitId, 'Partie');
   const flags = db.select({ flags: sessionQuestions.flags }).from(sessionQuestions).where(eq(sessionQuestions.sessionId, sessionId)).all();
   const { size } = reviewQuizSize(flags.map((f) => f.flags));
   const quiz = createQuiz(s.courseId, 'tp_review', `Révision — ${unit.title}`, size, sessionId);
@@ -93,10 +104,15 @@ export function createReviewQuiz(sessionId: string) {
   return quiz;
 }
 
+/**
+ * Enregistre la réponse à une question (une seule fois) ; une question ouverte est corrigée par l'IA.
+ * Le quiz passe à « terminé » quand toutes les questions ont une réponse.
+ * @throws HttpError 409 si le quiz n'est pas jouable, 400 si la réponse est vide
+ */
 export async function answerItem(quizId: string, itemId: string, body: { choice?: number | null; text?: string | null }) {
-  const quiz = db.select().from(quizzes).where(eq(quizzes.id, quizId)).get() ?? notFound('Quiz');
+  const quiz = findById(quizzes, quizId, 'Quiz');
   if (quiz.status !== 'ready') throw new HttpError(409, "Ce quiz n'est pas jouable pour l'instant.");
-  const it = db.select().from(quizItems).where(eq(quizItems.id, itemId)).get() ?? notFound('Question de quiz');
+  const it = findById(quizItems, itemId, 'Question de quiz');
   if (it.quizId !== quizId) notFound('Question de quiz');
   if (it.answeredAt !== null) return getQuiz(quizId);
 
@@ -139,8 +155,9 @@ export async function answerItem(quizId: string, itemId: string, body: { choice?
   return getQuiz(quizId);
 }
 
+/** Efface les réponses pour refaire le quiz. */
 export function restartQuiz(quizId: string) {
-  const quiz = db.select().from(quizzes).where(eq(quizzes.id, quizId)).get() ?? notFound('Quiz');
+  const quiz = findById(quizzes, quizId, 'Quiz');
   if (quiz.status !== 'done' && quiz.status !== 'ready') throw new HttpError(409, "Ce quiz n'est pas encore prêt.");
   db.update(quizItems)
     .set({ userChoice: null, userAnswer: null, correct: null, feedbackMd: null, answeredAt: null })
@@ -150,8 +167,9 @@ export function restartQuiz(quizId: string) {
   return getQuiz(quizId);
 }
 
+/** Relance la génération d'un quiz en erreur. */
 export function retryQuizGeneration(quizId: string) {
-  const quiz = db.select().from(quizzes).where(eq(quizzes.id, quizId)).get() ?? notFound('Quiz');
+  const quiz = findById(quizzes, quizId, 'Quiz');
   if (quiz.status !== 'error') return getQuiz(quizId);
   db.delete(quizItems).where(eq(quizItems.quizId, quizId)).run();
   db.update(quizzes).set({ status: 'generating', error: null }).where(eq(quizzes.id, quizId)).run();
@@ -159,7 +177,3 @@ export function retryQuizGeneration(quizId: string) {
   return getQuiz(quizId);
 }
 
-export function deleteQuiz(quizId: string) {
-  db.update(sessions).set({ reviewQuizId: null }).where(eq(sessions.reviewQuizId, quizId)).run();
-  db.delete(quizzes).where(eq(quizzes.id, quizId)).run();
-}

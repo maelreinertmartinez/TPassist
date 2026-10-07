@@ -1,5 +1,7 @@
+// Verrous temporels des aides : fonctions pures, sans accès à la base (testées dans test/unlocks.test.ts).
 import type { LockInfo, LocksDto, SessionMode, Verdict } from '@tpassist/shared';
 
+/** Ce qu'il faut savoir d'une tentative pour calculer les verrous (temps actifs en ms). */
 export interface LockAttempt {
   id: string;
   verdict: Verdict;
@@ -8,6 +10,7 @@ export interface LockAttempt {
   explainedAtMs: number | null;
 }
 
+/** État d'une question dans une séance, tel qu'enregistré en base. */
 export interface LockInputs {
   mode: SessionMode;
   activeMs: number;

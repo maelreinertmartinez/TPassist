@@ -1,7 +1,11 @@
-import type { CorrigeSolution } from '@tpassist/shared';
+// Rattachement des corrigés à leur sujet : regroupement des solutions par question et heuristique de repli
+// (titres et numéros), utilisée en mode simulation et par le rattachement manuel.
+import { stripAccents, type CorrigeSolution } from '@tpassist/shared';
 import type { LinkCorrections } from '../ai/schemas';
-import { normalizeLabel, range } from './segment';
+import { range } from '../utils';
+import { normalizeLabel } from './segment';
 
+/** Solution complète d’une question (éventuellement en plusieurs morceaux) et ses pages. */
 export interface MatchedSolution {
   solutionMd: string;
   pages: number[];
@@ -28,12 +32,14 @@ export function groupMatchedSolutions(
   return out;
 }
 
+/** Sujet candidat (TD/TP/EI) et ses questions. */
 export interface LinkTarget {
   id: string;
   title: string;
   questions: { id: string; exerciseTitle: string; label: string }[];
 }
 
+/** Corrigé à rattacher. */
 export interface LinkCorrige {
   id: string;
   title: string;
@@ -43,10 +49,8 @@ export interface LinkCorrige {
 
 function tokens(s: string) {
   return new Set(
-    s
+    stripAccents(s)
       .toLowerCase()
-      .normalize('NFD')
-      .replace(/[̀-ͯ]/g, '')
       .split(/[^a-z0-9]+/)
       .filter((t) => t && !['corrige', 'correction', 'du', 'de', 'la', 'le', 'des'].includes(t)),
   );
