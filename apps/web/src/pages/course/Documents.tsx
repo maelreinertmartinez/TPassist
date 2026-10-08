@@ -1,9 +1,11 @@
 // Onglet « Documents » : les PDF du cours, avec leur réanalyse et leur suppression (après confirmation).
+// Un document analysé s'ouvre sur sa page, où l'on peut ajouter une partie à partir de pages choisies.
 import { useMutation } from '@tanstack/react-query';
 import type { CourseDetail } from '@tpassist/shared';
-import { AlertCircle, FileText, FileUp, RefreshCw, Trash2 } from 'lucide-react';
+import { AlertCircle, ExternalLink, FileText, FileUp, RefreshCw, Trash2 } from 'lucide-react';
 import { Button, EmptyState, IconButton, useConfirm } from '../../components/ui';
 import { api } from '../../lib/api';
+import { plural } from '../../lib/format';
 import { Row } from './common';
 
 /**
@@ -15,11 +17,18 @@ export function Documents({ detail, onChange, onAdd }: { detail: CourseDetail; o
   const reanalyze = useMutation({ mutationFn: (id: string) => api.post(`/api/documents/${id}/reanalyze`), onSuccess: onChange });
   const remove = useMutation({ mutationFn: (id: string) => api.del(`/api/documents/${id}`), onSuccess: onChange });
   const ask = async (doc: CourseDetail['documents'][number], action: 'reanalyze' | 'delete') => {
-    const { count } = await api.get<{ count: number }>(`/api/documents/${doc.id}/sessions-count`);
+    const counts = await api.get<{ count: number; reanalyzeCount: number }>(`/api/documents/${doc.id}/sessions-count`);
+    // Une réanalyse garde les parties ajoutées à la main (et leurs séances).
+    const count = action === 'reanalyze' ? counts.reanalyzeCount : counts.count;
     const warn = count ? ` ${count} séance(s) liée(s) à ce document seront supprimées.` : '';
     const ok = await confirm(
       action === 'reanalyze'
-        ? { title: `Réanalyser « ${doc.filename} » ?`, message: `Les parties détectées seront recréées par l’IA.${warn}`, confirmLabel: 'Réanalyser', danger: Boolean(count) }
+        ? {
+            title: `Réanalyser « ${doc.filename} » ?`,
+            message: `Les parties détectées seront recréées par l’IA ; les parties ajoutées à la main sont conservées.${warn}`,
+            confirmLabel: 'Réanalyser',
+            danger: Boolean(count),
+          }
         : { title: `Supprimer « ${doc.filename} » ?`, message: `Le fichier et tout ce qui en a été extrait seront supprimés.${warn}`, confirmLabel: 'Supprimer', danger: true },
     );
     if (ok) (action === 'reanalyze' ? reanalyze : remove).mutate(doc.id);
@@ -37,14 +46,11 @@ export function Documents({ detail, onChange, onAdd }: { detail: CourseDetail; o
         <Row
           key={doc.id}
           icon={<FileText className="size-4" />}
-          title={
-            <a href={`/api/documents/${doc.id}/file`} target="_blank" rel="noreferrer" className="hover:underline">
-              {doc.filename}
-            </a>
-          }
+          title={doc.filename}
+          to={doc.status === 'ready' ? `/courses/${detail.course.id}/documents/${doc.id}` : undefined}
           meta={
             doc.status === 'ready' ? (
-              `${doc.pageCount} pages · analysé`
+              `${plural(doc.pageCount ?? 0, 'page')} · ${plural(detail.units.filter((u) => u.documentId === doc.id).length, 'partie')}`
             ) : doc.status === 'error' ? (
               <span className="inline-flex items-center gap-1 text-red-600">
                 <AlertCircle className="size-3" /> {doc.error}
@@ -57,6 +63,9 @@ export function Documents({ detail, onChange, onAdd }: { detail: CourseDetail; o
           }
           actions={
             <>
+              <IconButton label="Ouvrir le PDF" onClick={() => window.open(`/api/documents/${doc.id}/file`, '_blank', 'noreferrer')}>
+                <ExternalLink className="size-4" />
+              </IconButton>
               <IconButton label="Réanalyser" onClick={() => ask(doc, 'reanalyze')}>
                 <RefreshCw className="size-4" />
               </IconButton>

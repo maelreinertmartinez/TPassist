@@ -1,5 +1,5 @@
 // Requêtes de données réutilisées par plusieurs services et tâches (aucune règle métier ici).
-import { and, asc, count, eq, inArray, max, type InferSelectModel, type SQL } from 'drizzle-orm';
+import { and, asc, count, eq, inArray, max, ne, type InferSelectModel, type SQL } from 'drizzle-orm';
 import type { SQLiteColumn, SQLiteTable } from 'drizzle-orm/sqlite-core';
 import type { UnitKind } from '@tpassist/shared';
 import { notFound } from '../errors';
@@ -37,6 +37,19 @@ export function courseUnits(courseId: string, kinds?: readonly UnitKind[]) {
     .where(and(eq(units.courseId, courseId), kinds ? inArray(units.kind, [...kinds]) : undefined))
     .orderBy(asc(units.order))
     .all();
+}
+
+/**
+ * Ids des unités extraites d'un document.
+ * @param opts.keepManual exclut les parties ajoutées à la main (une réanalyse les garde)
+ */
+export function documentUnitIds(documentId: string, opts: { keepManual?: boolean } = {}): string[] {
+  return db
+    .select({ id: units.id })
+    .from(units)
+    .where(and(eq(units.documentId, documentId), opts.keepManual ? ne(units.origin, 'manual') : undefined))
+    .all()
+    .map((u) => u.id);
 }
 
 /** Supprime des unités (et tout ce qui en dépend) et nettoie l'index plein texte de leurs sections. */

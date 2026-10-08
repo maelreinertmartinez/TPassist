@@ -8,6 +8,7 @@ import { createBrowserRouter, RouterProvider } from 'react-router-dom';
 import { AppShell } from './components/AppShell';
 import { CoursePage } from './pages/course/CoursePage';
 import { Dashboard } from './pages/Dashboard';
+import { DocumentPage } from './pages/document/DocumentPage';
 import { QuizPlayer } from './pages/quiz/QuizPlayer';
 import { ReportView } from './pages/ReportView';
 import { SessionPlayer } from './pages/session/SessionPlayer';
@@ -24,6 +25,7 @@ const router = createBrowserRouter([
     children: [
       { path: '/', element: <Dashboard /> },
       { path: '/courses/:courseId', element: <CoursePage /> },
+      { path: '/courses/:courseId/documents/:documentId', element: <DocumentPage /> },
       { path: '/units/:unitId/edit', element: <UnitEditor /> },
       { path: '/sessions/:sessionId', element: <SessionPlayer /> },
       { path: '/reports/:reportId', element: <ReportView /> },

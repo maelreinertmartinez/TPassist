@@ -1,9 +1,9 @@
 // Liste des TD, TP ou EI d'un cours, avec leur lancement, la reprise d'une séance et le dernier bilan.
 import { UNIT_KIND_LABELS, type CourseDetail, type UnitDto } from '@tpassist/shared';
-import { CheckCircle2, Pencil, Play, RotateCcw, ScrollText, Sparkles, Timer } from 'lucide-react';
+import { CheckCircle2, Hand, Pencil, Play, RotateCcw, ScrollText, Sparkles, Timer } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { Button, IconButton, Tag } from '../../components/ui';
-import { formatDate, plural } from '../../lib/format';
+import { formatDate, formatPageRange, plural } from '../../lib/format';
 import { KIND_ICON, Row } from './common';
 
 /**
@@ -21,7 +21,7 @@ export function UnitList({ units, sessions, onLaunch, launching }: { units: Unit
         const meta = [
           UNIT_KIND_LABELS[u.kind],
           plural(u.questionCount, 'question'),
-          u.documentName ? `${u.documentName}, p. ${u.pageStart}–${u.pageEnd}` : u.origin === 'generated' ? 'générée par l’IA' : null,
+          u.documentName ? `${u.documentName}, ${formatPageRange(u.pageStart, u.pageEnd)}` : u.origin === 'generated' ? 'générée par l’IA' : null,
           u.kind === 'ei' && u.meta.durationMinutes ? `${u.meta.durationMinutes} min` : null,
           last && (last.status === 'reporting' ? 'bilan en préparation' : `terminé le ${formatDate(last.updatedAt)}${last.score !== null ? ` · ${last.score}/20` : ''}`),
         ].filter(Boolean);
@@ -36,6 +36,11 @@ export function UnitList({ units, sessions, onLaunch, launching }: { units: Unit
                 {u.hasCorrection && (
                   <Tag tone="green">
                     <CheckCircle2 className="size-3" /> Corrigé
+                  </Tag>
+                )}
+                {u.origin === 'manual' && (
+                  <Tag>
+                    <Hand className="size-3" /> Ajoutée à la main
                   </Tag>
                 )}
                 {u.origin === 'generated' && (

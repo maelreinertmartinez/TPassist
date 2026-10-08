@@ -8,10 +8,13 @@ import type { WeakPointDto } from './weakPoints';
 export type UnitKind = 'cours' | 'td' | 'tp' | 'ei' | 'corrige';
 /** Parties qui contiennent des questions et peuvent être lancées en séance. */
 export type PlayableKind = 'td' | 'tp' | 'ei';
-/** Partie extraite d'un PDF ou rédigée par l'IA (EI blanche). */
-export type UnitOrigin = 'imported' | 'generated';
+/** Partie détectée dans un PDF par l'analyse, ajoutée à la main à partir de pages choisies, ou rédigée par l'IA (EI blanche). */
+export type UnitOrigin = 'imported' | 'manual' | 'generated';
 /** Avancement de l’analyse d’un PDF. */
 export type DocumentStatus = 'pending' | 'processing' | 'ready' | 'error';
+
+/** Tous les types de parties, dans l'ordre du parcours. */
+export const UNIT_KINDS: readonly UnitKind[] = ['cours', 'td', 'tp', 'ei', 'corrige'];
 
 /** Types de parties jouables (TD, TP, EI). */
 export const PLAYABLE_KINDS: readonly PlayableKind[] = ['td', 'tp', 'ei'];
@@ -74,6 +77,15 @@ export interface CorrigeSolution {
   pageStart: number | null;
   pageEnd: number | null;
   matchedQuestionId?: string | null;
+}
+
+/** Ajout manuel d'une partie à partir d'une plage de pages d'un document déjà analysé. */
+export interface AddUnitFromPagesBody {
+  kind: UnitKind;
+  title: string;
+  /** Première et dernière page de la partie (incluses). */
+  pageStart: number;
+  pageEnd: number;
 }
 
 /** Données propres à certains types d'unités (stockées en JSON). */

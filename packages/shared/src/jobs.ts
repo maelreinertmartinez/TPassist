@@ -1,6 +1,6 @@
 // Tâches de fond (file persistée en base).
 
-export type JobType = 'ingest' | 'link_corrections' | 'report' | 'quiz' | 'generate_ei' | 'notions';
+export type JobType = 'ingest' | 'extract_unit' | 'link_corrections' | 'report' | 'quiz' | 'generate_ei' | 'notions';
 /** Avancement d’une tâche. */
 export type JobStatus = 'queued' | 'running' | 'done' | 'error';
 

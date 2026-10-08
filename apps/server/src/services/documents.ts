@@ -1,12 +1,13 @@
-// Documents PDF d'un cours : ajout (puis analyse en tâche de fond), réanalyse et suppression.
+// Documents PDF d'un cours : ajout (puis analyse en tâche de fond), réanalyse, ajout manuel d'une partie à partir
+// de pages choisies, et suppression.
 import { eq, inArray } from 'drizzle-orm';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { DocumentDto } from '@tpassist/shared';
+import { UNIT_KINDS, type AddUnitFromPagesBody, type DocumentDto } from '@tpassist/shared';
 import { config } from '../config';
 import { db, newId } from '../db/client';
-import { countWhere, deleteUnits, findById } from '../db/repo';
-import { courses, documents, sessions, units } from '../db/schema';
+import { countWhere, deleteUnits, documentUnitIds, findById } from '../db/repo';
+import { courses, documents, sessions } from '../db/schema';
 import { HttpError } from '../errors';
 import { enqueueJob, jobDto } from '../jobs/queue';
 
@@ -39,7 +40,26 @@ export async function addDocument(courseId: string, filename: string, data: Buff
   return { document: documentDto(doc), job: jobDto(job) };
 }
 
-/** Relance l'analyse d'un document : ses parties seront recréées. */
+/**
+ * Lance l'extraction d'une partie à partir d'une plage de pages d'un document déjà analysé.
+ * @throws HttpError 404 si le document n'existe pas, 409 s'il n'est pas encore analysé, 400 si la demande est invalide
+ */
+export function addUnitFromPages(documentId: string, body: Partial<AddUnitFromPagesBody>) {
+  const doc = findById(documents, documentId, 'Document');
+  if (doc.status !== 'ready' || !doc.pageCount) throw new HttpError(409, 'Attends la fin de l’analyse du document.');
+  const { kind, pageStart, pageEnd } = body;
+  if (!kind || !UNIT_KINDS.includes(kind)) throw new HttpError(400, 'Type de partie inconnu.');
+  const title = body.title?.trim();
+  if (!title) throw new HttpError(400, 'Le titre est obligatoire.');
+  const isPage = (n: unknown): n is number => Number.isInteger(n) && (n as number) >= 1 && (n as number) <= doc.pageCount!;
+  if (!isPage(pageStart) || !isPage(pageEnd) || pageStart > pageEnd) {
+    throw new HttpError(400, `Pages invalides : choisis une plage entre 1 et ${doc.pageCount}.`);
+  }
+  const payload: AddUnitFromPagesBody = { kind, title, pageStart, pageEnd };
+  return jobDto(enqueueJob({ type: 'extract_unit', courseId: doc.courseId, refId: documentId, payload: { ...payload } }));
+}
+
+/** Relance l'analyse d'un document : les parties détectées seront recréées (celles ajoutées à la main sont gardées). */
 export function reanalyzeDocument(id: string) {
   const doc = findById(documents, id, 'Document');
   db.update(documents).set({ status: 'pending', error: null }).where(eq(documents.id, id)).run();
@@ -55,17 +75,16 @@ export async function removeDocumentFiles(doc: Pick<DocumentRow, 'id' | 'path'>)
 /** Supprime un document, ses parties (et leurs séances) et ses fichiers. */
 export async function deleteDocument(id: string) {
   const doc = findById(documents, id, 'Document');
-  deleteUnits(unitIdsOf(id));
+  deleteUnits(documentUnitIds(id));
   db.delete(documents).where(eq(documents.id, id)).run();
   await removeDocumentFiles(doc);
 }
 
-/** Nombre de séances qui seraient supprimées avec le document (pour prévenir l'utilisateur). */
-export function documentSessionsCount(id: string): number {
-  const unitIds = unitIdsOf(id);
-  return unitIds.length ? countWhere(sessions, inArray(sessions.unitId, unitIds)) : 0;
-}
-
-function unitIdsOf(documentId: string): string[] {
-  return db.select({ id: units.id }).from(units).where(eq(units.documentId, documentId)).all().map((u) => u.id);
+/**
+ * Séances qui seraient supprimées (pour prévenir l'utilisateur) : `count` avec le document,
+ * `reanalyzeCount` par une réanalyse (qui garde les parties ajoutées à la main).
+ */
+export function documentSessionsCount(id: string): { count: number; reanalyzeCount: number } {
+  const sessionsOf = (unitIds: string[]) => (unitIds.length ? countWhere(sessions, inArray(sessions.unitId, unitIds)) : 0);
+  return { count: sessionsOf(documentUnitIds(id)), reanalyzeCount: sessionsOf(documentUnitIds(id, { keepManual: true })) };
 }

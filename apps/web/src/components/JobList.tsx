@@ -7,6 +7,7 @@ import { Button, Callout, ProgressBar } from './ui';
 
 const LABELS: Record<JobType, string> = {
   ingest: 'Analyse',
+  extract_unit: 'Ajout manuel',
   link_corrections: 'Rattachement des corrigés',
   report: 'Bilan de séance',
   quiz: 'Génération d’un quiz',
@@ -22,7 +23,9 @@ export function JobList({ jobs, documentsById, onChange }: { jobs: JobDto[]; doc
   return (
     <div className="space-y-2">
       {visible.map((j) => {
-        const title = `${LABELS[j.type]}${j.type === 'ingest' && j.refId && documentsById.get(j.refId) ? ` de « ${documentsById.get(j.refId)} »` : ''}`;
+        // Analyse et ajout manuel portent sur un document : on le nomme.
+        const docName = (j.type === 'ingest' || j.type === 'extract_unit') && j.refId ? documentsById.get(j.refId) : undefined;
+        const title = `${LABELS[j.type]}${docName ? ` ${j.type === 'ingest' ? 'de' : 'dans'} « ${docName} »` : ''}`;
         return j.status === 'error' ? (
           <Callout
             key={j.id}

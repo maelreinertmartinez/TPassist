@@ -1,50 +1,23 @@
 // Tâche « ingest » : analyse d'un PDF. Chaque page est classée par l'IA (cours, TD, TP, EI, corrigé), les pages
-// contiguës sont regroupées en parties, puis chaque partie est transcrite par lots de pages (sections de cours,
-// exercices et questions, ou solutions d'un corrigé). Les corrigés sont ensuite rattachés à leur sujet.
+// contiguës sont regroupées en parties, puis chaque partie est transcrite (voir extractUnit.ts). Les corrigés sont
+// ensuite rattachés à leur sujet. Une réanalyse recrée les parties détectées mais garde celles ajoutées à la main.
 import { eq } from 'drizzle-orm';
-import { PLAYABLE_KINDS, UNIT_KIND_LABELS } from '@tpassist/shared';
+import { UNIT_KIND_LABELS } from '@tpassist/shared';
 import { runAgent, type ContentBlock } from '../ai/agent';
 import { PROMPTS } from '../ai/prompts';
-import {
-  CorrigeExtractionSchema,
-  CourseExtractionSchema,
-  ExerciseExtractionSchema,
-  SegmentationSchema,
-  type CorrigeExtraction,
-} from '../ai/schemas';
-import { db, newId } from '../db/client';
-import { courseUnits, deleteUnits, insertExercises, insertSection, nextOrder } from '../db/repo';
-import { documents, units } from '../db/schema';
-import { classifyPageText, mockExtractCorrige, mockExtractCours, mockExtractExercises, mockSegmentation } from '../ingest/mockHeuristics';
-import { mergeExerciseBatches, mergePagesIntoUnits, mergeSectionBatches, type ExtractedExercise, type ExtractedSection, type PageClass, type UnitSpan } from '../ingest/segment';
-import { pdfPageCount, pdfPagesText, readPageBase64, renderPages } from '../pdf/render';
+import { SegmentationSchema } from '../ai/schemas';
+import { db } from '../db/client';
+import { deleteUnits, documentUnitIds } from '../db/repo';
+import { documents } from '../db/schema';
+import { classifyPageText, mockSegmentation } from '../ingest/mockHeuristics';
+import { mergePagesIntoUnits, type PageClass } from '../ingest/segment';
+import { pdfPageCount, pdfPagesText, renderPages } from '../pdf/render';
 import { chunk, errorText, range } from '../utils';
-import { enqueueJob, hasPendingJob, registerJobHandler, type JobContext, type JobRow } from './queue';
+import { createUnitFromSpan, maybeEnqueueLinkCorrections, pagesContent } from './extractUnit';
+import { registerJobHandler, type JobContext, type JobRow } from './queue';
 
 /** Pages classées par appel (miniatures). */
 const SEGMENT_BATCH = 20;
-/** Pages transcrites par appel (pleine résolution). */
-const EXTRACT_BATCH = 12;
-/** Longueur maximale de la couche texte envoyée pour une page. */
-const PAGE_TEXT_LIMIT = 3500;
-
-function pageText(texts: string[], page: number) {
-  return (texts[page - 1] ?? '').slice(0, PAGE_TEXT_LIMIT);
-}
-
-async function pagesContent(
-  documentId: string,
-  texts: string[],
-  pages: number[],
-  variant: 'full' | 'thumb',
-): Promise<ContentBlock[]> {
-  const blocks: ContentBlock[] = [];
-  for (const p of pages) {
-    blocks.push({ type: 'text', text: `=== Page ${p} — couche texte ===\n${pageText(texts, p) || '(pas de texte extractible : page scannée ou image)'}` });
-    blocks.push({ type: 'image', mediaType: 'image/png', data: await readPageBase64(documentId, p, variant) });
-  }
-  return blocks;
-}
 
 async function segment(documentId: string, texts: string[], pageCount: number, ctx: JobContext): Promise<PageClass[]> {
   const batches = chunk(range(1, pageCount), SEGMENT_BATCH);
@@ -85,80 +58,6 @@ async function segment(documentId: string, texts: string[], pageCount: number, c
   return all;
 }
 
-function sharedPageNote(span: UnitSpan) {
-  return `Partie à extraire : « ${span.title} » (type ${UNIT_KIND_LABELS[span.kind]}), pages ${span.pageStart} à ${span.pageEnd}. La première et la dernière page peuvent contenir aussi la fin ou le début d'une autre partie : ignore ce qui n'appartient pas à « ${span.title} ».`;
-}
-
-async function extractCours(documentId: string, texts: string[], span: UnitSpan): Promise<ExtractedSection[]> {
-  const batches: ExtractedSection[][] = [];
-  for (const pages of chunk(range(span.pageStart, span.pageEnd), EXTRACT_BATCH)) {
-    const done = batches.flat();
-    const prevInfo = done.length ? `Sections déjà extraites (lots précédents) : ${done.map((s) => `« ${s.title} »`).join(', ')}. La dernière peut continuer dans ce lot.` : '';
-    const r = await runAgent({
-      task: 'ingest.cours',
-      kind: 'ingest',
-      system: PROMPTS.extractCours,
-      content: [
-        { type: 'text', text: `${sharedPageNote(span)}\nLot : pages ${pages[0]} à ${pages[pages.length - 1]}. ${prevInfo}` },
-        ...(await pagesContent(documentId, texts, pages, 'full')),
-      ],
-      schema: CourseExtractionSchema,
-      effort: 'medium',
-      mock: () => mockExtractCours(pages.map((p) => ({ page: p, text: texts[p - 1] ?? '' }))),
-    });
-    batches.push(r.data.sections);
-  }
-  return mergeSectionBatches(batches);
-}
-
-async function extractExercises(documentId: string, texts: string[], span: UnitSpan) {
-  const batches: ExtractedExercise[][] = [];
-  let durationMinutes: number | null = null;
-  for (const pages of chunk(range(span.pageStart, span.pageEnd), EXTRACT_BATCH)) {
-    const done = batches.flat();
-    const prevInfo = done.length
-      ? `Déjà extrait (lots précédents) : ${done.map((e) => `${e.title} [questions ${e.questions.map((q) => q.label).join(', ')}]`).join(' ; ')}. Le dernier exercice peut continuer dans ce lot.`
-      : '';
-    const r = await runAgent({
-      task: `ingest.${span.kind}`,
-      kind: 'ingest',
-      system: PROMPTS.extractExercises,
-      content: [
-        { type: 'text', text: `${sharedPageNote(span)}\nLot : pages ${pages[0]} à ${pages[pages.length - 1]}. ${prevInfo}` },
-        ...(await pagesContent(documentId, texts, pages, 'full')),
-      ],
-      schema: ExerciseExtractionSchema,
-      effort: 'medium',
-      mock: () => mockExtractExercises(pages.map((p) => ({ page: p, text: texts[p - 1] ?? '' })), span.kind),
-    });
-    durationMinutes ??= r.data.durationMinutes;
-    batches.push(r.data.exercises);
-  }
-  return { durationMinutes, exercises: mergeExerciseBatches(batches) };
-}
-
-async function extractCorrige(documentId: string, texts: string[], span: UnitSpan): Promise<CorrigeExtraction> {
-  let targetTitle = '';
-  const solutions: CorrigeExtraction['solutions'] = [];
-  for (const pages of chunk(range(span.pageStart, span.pageEnd), EXTRACT_BATCH)) {
-    const r = await runAgent({
-      task: 'ingest.corrige',
-      kind: 'ingest',
-      system: PROMPTS.extractCorrige,
-      content: [
-        { type: 'text', text: `${sharedPageNote(span)}\nLot : pages ${pages[0]} à ${pages[pages.length - 1]}.` },
-        ...(await pagesContent(documentId, texts, pages, 'full')),
-      ],
-      schema: CorrigeExtractionSchema,
-      effort: 'medium',
-      mock: () => mockExtractCorrige(pages.map((p) => ({ page: p, text: texts[p - 1] ?? '' }))),
-    });
-    targetTitle ||= r.data.targetTitle;
-    solutions.push(...r.data.solutions);
-  }
-  return { targetTitle, solutions };
-}
-
 async function ingest(job: JobRow, ctx: JobContext) {
   const documentId = job.refId!;
   const doc = db.select().from(documents).where(eq(documents.id, documentId)).get();
@@ -178,48 +77,12 @@ async function ingest(job: JobRow, ctx: JobContext) {
     const spans = mergePagesIntoUnits(classes);
     if (spans.length === 0) throw new Error('Aucune partie exploitable détectée dans ce PDF.');
 
-    // Réanalyse : on repart de zéro pour ce document.
-    const old = db.select({ id: units.id }).from(units).where(eq(units.documentId, documentId)).all();
-    deleteUnits(old.map((u) => u.id));
+    // Réanalyse : les parties détectées sont recréées, celles ajoutées à la main sont gardées.
+    deleteUnits(documentUnitIds(documentId, { keepManual: true }));
 
-    let order = nextOrder(units.order, eq(units.courseId, doc.courseId));
     for (const [i, span] of spans.entries()) {
       ctx.progress(0.4 + (0.55 * i) / spans.length, `Extraction : ${span.title} (${UNIT_KIND_LABELS[span.kind]}, p. ${span.pageStart}–${span.pageEnd})…`);
-      const unitId = newId();
-      const base = {
-        id: unitId,
-        courseId: doc.courseId,
-        documentId,
-        kind: span.kind,
-        title: span.title,
-        order: order++,
-        pageStart: span.pageStart,
-        pageEnd: span.pageEnd,
-      };
-      if (span.kind === 'cours') {
-        const sections = await extractCours(documentId, texts, span);
-        db.insert(units).values({ ...base, meta: {} }).run();
-        sections.forEach((s, j) => insertSection({ unitId, courseId: doc.courseId, order: j, ...s }));
-      } else if (span.kind === 'corrige') {
-        const c = await extractCorrige(documentId, texts, span);
-        db.insert(units)
-          .values({ ...base, meta: { targetTitle: c.targetTitle, solutions: c.solutions.map((s) => ({ ...s, matchedQuestionId: null })) } })
-          .run();
-      } else {
-        const { durationMinutes, exercises } = await extractExercises(documentId, texts, span);
-        db.insert(units)
-          .values({ ...base, meta: { durationMinutes } })
-          .run();
-        insertExercises(
-          unitId,
-          documentId,
-          exercises.map((e) => ({
-            title: e.title,
-            contextMd: e.contextMd,
-            questions: e.questions.map((q) => ({ ...q, officialSolutionMd: q.inlineSolutionMd })),
-          })),
-        );
-      }
+      await createUnitFromSpan(doc, texts, span, 'imported');
     }
 
     db.update(documents).set({ status: 'ready' }).where(eq(documents.id, documentId)).run();
@@ -232,14 +95,6 @@ async function ingest(job: JobRow, ctx: JobContext) {
       .run();
     throw err;
   }
-}
-
-/** Lance le rattachement s'il existe des corrigés non rattachés et des sujets candidats (une seule tâche à la fois). */
-function maybeEnqueueLinkCorrections(courseId: string) {
-  const pending = courseUnits(courseId, ['corrige']).some((u) => !u.correctsUnitId);
-  if (!pending || courseUnits(courseId, PLAYABLE_KINDS).length === 0) return;
-  if (hasPendingJob('link_corrections', { courseId })) return;
-  enqueueJob({ type: 'link_corrections', courseId, refId: courseId });
 }
 
 registerJobHandler('ingest', ingest);

@@ -70,8 +70,8 @@ async function generateEi(job: JobRow, ctx: JobContext) {
 
   ctx.progress(0.05, 'Analyse des EI existantes…');
   const eiUnits = courseUnits(courseId, ['ei']);
-  // Les EI importées sont les meilleurs modèles ; à défaut, les EI déjà générées.
-  const imported = eiUnits.filter((u) => u.origin === 'imported');
+  // Les EI tirées des PDF (détectées ou ajoutées à la main) sont les meilleurs modèles ; à défaut, les EI déjà générées.
+  const imported = eiUnits.filter((u) => u.origin !== 'generated');
   const models = (imported.length ? imported : eiUnits).slice(0, MAX_MODELS);
   if (models.length === 0) throw new Error('Ajoute au moins une EI au cours pour pouvoir en générer de nouvelles.');
 

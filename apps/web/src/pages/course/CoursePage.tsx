@@ -1,10 +1,10 @@
 // Page d'un cours : en-tête (icône, nom, actions), reprise de la dernière séance, tâches en cours et onglets
 // dans l'ordre du parcours (cours, notions, TD & TP, EI, points bloquants, historique, documents).
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { CourseDetail, SessionMode, UnitDto, UnitKind } from '@tpassist/shared';
+import { useMutation } from '@tanstack/react-query';
+import type { SessionMode, UnitDto, UnitKind } from '@tpassist/shared';
 import { FileUp, Play } from 'lucide-react';
 import { useMemo, useState, type ReactNode } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { ChatPanel } from '../../components/ChatPanel';
 import { JobList } from '../../components/JobList';
 import { UploadDialog } from '../../components/UploadDialog';
@@ -13,6 +13,7 @@ import { Button, Callout, EmptyState, ErrorBox, Page, Spinner, ViewTabs } from '
 import { api } from '../../lib/api';
 import { useBreadcrumbs } from '../../lib/breadcrumbs';
 import { plural } from '../../lib/format';
+import { useCourseDetail } from '../../lib/useCourseDetail';
 import { Count } from './common';
 import { CourseHeader } from './CourseHeader';
 import { CoursList } from './CoursList';
@@ -25,29 +26,17 @@ import { UnitList } from './UnitList';
 
 type Tab = 'cours' | 'notions' | 'exercices' | 'ei' | 'points' | 'historique' | 'documents';
 
-/** Page d’un cours (route /courses/:courseId). */
+/** Page d’un cours (route /courses/:courseId, `?tab=documents` pour ouvrir directement un onglet). */
 export function CoursePage() {
   const { courseId } = useParams<{ courseId: string }>();
-  const qc = useQueryClient();
+  const [params] = useSearchParams();
   const navigate = useNavigate();
-  const detail = useQuery({
-    queryKey: ['course', courseId],
-    queryFn: () => api.get<CourseDetail>(`/api/courses/${courseId}`),
-    refetchInterval: (q) => {
-      const d = q.state.data;
-      if (!d) return false;
-      const busy =
-        d.jobs.some((j) => j.status === 'queued' || j.status === 'running') ||
-        d.sessions.some((s) => s.status === 'reporting') ||
-        d.quizzes.some((x) => x.status === 'generating') ||
-        d.documents.some((x) => x.status === 'pending' || x.status === 'processing');
-      return busy ? 2000 : false;
-    },
-  });
-  const refresh = () => qc.invalidateQueries({ queryKey: ['course', courseId] });
+  const detail = useCourseDetail(courseId);
+  const refresh = detail.refresh;
   useBreadcrumbs(detail.data ? [{ label: detail.data.course.name }] : []);
 
-  const [tab, setTab] = useState<Tab | null>(null);
+  // Un onglet absent ou masqué est ignoré plus bas (repli sur le premier onglet visible).
+  const [tab, setTab] = useState<Tab | null>(params.get('tab') as Tab | null);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [quizOpen, setQuizOpen] = useState(false);

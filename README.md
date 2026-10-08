@@ -16,6 +16,9 @@ Toute l'application tourne dans **un seul conteneur Docker** et n'est accessible
 - **Import de PDF** (cours, TD, TP, EI, corrigés) : l'IA classe chaque page, découpe le document en parties
   (un même PDF peut mélanger cours et TD/TP), transcrit les énoncés question par question (Markdown + LaTeX)
   et rattache automatiquement les **corrigés officiels** à leur sujet quand il y en a.
+- **Ajout manuel d’une partie** : dans l’onglet Documents, un PDF analysé s’ouvre sur ses pages en miniatures, chacune marquée
+  des parties déjà détectées. Choisis une plage de pages et un type (cours, TD, TP, EI ou corrigé) : l’IA transcrit la partie
+  comme lors de l’analyse. Ces parties sont conservées si tu réanalyses le document.
 - **Lecteur de TP/TD** question par question :
   - à gauche, l'énoncé seul (données de l'exercice, figures du PDF si besoin) et les aides :
     1. Reformuler l'énoncé — 2. Partie de cours utile — 3. Une indication — 4. La solution — 5. Question suivante ;
@@ -117,7 +120,8 @@ apps/server         Fastify + Claude Agent SDK + SQLite (Drizzle)
   src/ai/             runAgent() (seul point d'appel au SDK), prompts, schémas Zod des sorties, outils MCP du cours
   src/ingest/         assemblage des résultats d'analyse des PDF (fonctions pures) et heuristiques de simulation
   src/pdf/            lecture et rendu des PDF (poppler)
-  src/jobs/           file de tâches de fond et ses gestionnaires : analyse PDF, corrigés, bilans, quiz, EI, notions
+  src/jobs/           file de tâches de fond et ses gestionnaires : analyse PDF, transcription d'une partie (aussi pour
+                      l'ajout manuel à partir de pages choisies), corrigés, bilans, quiz, EI, notions
   src/services/       logique métier par domaine : cours, documents, séances (+ verrous), aides du tuteur, chat,
                       bilans, quiz, points bloquants, notions, éditeur, images, statistiques
   src/http/           routes (lecture de la requête puis délégation aux services) et diffusion SSE

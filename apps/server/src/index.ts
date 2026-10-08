@@ -12,6 +12,7 @@ import { startJobWorker } from './jobs/queue';
 import { errorText } from './utils';
 // Enregistrement des gestionnaires de tâches.
 import './jobs/ingest';
+import './jobs/extractUnit';
 import './jobs/linkCorrections';
 import './jobs/generateReport';
 import './jobs/generateQuiz';

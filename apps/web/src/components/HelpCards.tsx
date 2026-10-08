@@ -3,7 +3,8 @@ import type { CourseRef, EventKind, HelpEventDto } from '@tpassist/shared';
 import { BookOpen, CheckCircle2, Lightbulb, Loader2, MessageSquareText, Sparkles } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
 import { Markdown } from './Markdown';
-import { Callout, Modal, type Tone } from './ui';
+import { PageImageModal, type PageImage } from './PageImageModal';
+import { Callout, type Tone } from './ui';
 
 /** Aides affichées sous l'énoncé (les détails d'erreur sont affichés avec la réponse fausse). */
 export type HelpKindShown = Exclude<EventKind, 'error_location' | 'error_explanation'>;
@@ -53,7 +54,7 @@ export function HelpCard({ kind, contentMd, courseRefs, solutionSource, streamin
 }
 
 function CourseRefs({ refs }: { refs: CourseRef[] }) {
-  const [page, setPage] = useState<{ url: string; label: string } | null>(null);
+  const [page, setPage] = useState<PageImage | null>(null);
   return (
     <div className="space-y-4">
       {refs.map((r) => (
@@ -79,9 +80,7 @@ function CourseRefs({ refs }: { refs: CourseRef[] }) {
           </div>
         </div>
       ))}
-      <Modal open={Boolean(page)} onClose={() => setPage(null)} title={page?.label ?? ''} wide>
-        {page && <img src={page.url} alt={page.label} className="w-full rounded" />}
-      </Modal>
+      <PageImageModal page={page} onClose={() => setPage(null)} />
     </div>
   );
 }

@@ -3,7 +3,7 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { createReadStream, existsSync } from 'node:fs';
 import { eq } from 'drizzle-orm';
-import { HELP_KINDS, type AiHealth, type HelpKind, type SessionMode, type SubmitAttemptBody, type UnitKind, type WeakPointStatus } from '@tpassist/shared';
+import { HELP_KINDS, type AddUnitFromPagesBody, type AiHealth, type HelpKind, type SessionMode, type SubmitAttemptBody, type UnitKind, type WeakPointStatus } from '@tpassist/shared';
 import { authSource, pingAi } from '../ai/agent';
 import { config } from '../config';
 import { db } from '../db/client';
@@ -116,13 +116,15 @@ export async function registerRoutes(app: FastifyInstance) {
     reply.header('Content-Disposition', `inline; filename="${encodeURIComponent(doc.filename)}"`);
     return sendFile(reply, doc.path, 'application/pdf', 'Document');
   });
-  app.get<{ Params: Params }>('/api/documents/:id/pages/:page', async (req, reply) => {
+  /** Rendu d'une page ; `size=thumb` : miniature (grille des pages). */
+  app.get<{ Params: Params; Querystring: { size?: string } }>('/api/documents/:id/pages/:page', async (req, reply) => {
     const page = Number.parseInt(req.params.page, 10);
     if (!Number.isFinite(page)) notFound('Page');
     reply.header('Cache-Control', 'public, max-age=86400');
-    return sendFile(reply, pageImagePath(req.params.id, page, 'full'), 'image/png', 'Page');
+    return sendFile(reply, pageImagePath(req.params.id, page, req.query.size === 'thumb' ? 'thumb' : 'full'), 'image/png', 'Page');
   });
-  app.get<{ Params: Params }>('/api/documents/:id/sessions-count', async (req) => ({ count: documentsSvc.documentSessionsCount(req.params.id) }));
+  app.get<{ Params: Params }>('/api/documents/:id/sessions-count', async (req) => documentsSvc.documentSessionsCount(req.params.id));
+  app.post<{ Params: Params; Body: Partial<AddUnitFromPagesBody> }>('/api/documents/:id/units', async (req) => documentsSvc.addUnitFromPages(req.params.id, req.body ?? {}));
   app.post<{ Params: Params }>('/api/documents/:id/reanalyze', async (req) => documentsSvc.reanalyzeDocument(req.params.id));
   app.delete<{ Params: Params }>('/api/documents/:id', async (req) => {
     await documentsSvc.deleteDocument(req.params.id);

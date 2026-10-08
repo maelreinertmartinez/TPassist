@@ -70,3 +70,9 @@ export function pluralWord(n: number, one: string, many = `${one}s`): string {
 export function plural(n: number, one: string, many?: string): string {
   return `${n} ${pluralWord(n, one, many)}`;
 }
+
+/** Plage de pages : « p. 3 » ou « p. 3–5 ». */
+export function formatPageRange(start: number | null, end: number | null): string {
+  if (start === null) return '';
+  return end === null || end === start ? `p. ${start}` : `p. ${start}–${end}`;
+}
